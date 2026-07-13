@@ -1,0 +1,14 @@
+from services.git_service import clone_or_pull_repo, get_file_commits
+
+def test_clone_and_get_commits(tmp_path):
+    # 用 CodeTrace 自己的仓库来测试
+    repo_path = clone_or_pull_repo("https://github.com/polairszzh/CodeTrace.git")
+    assert repo_path.exists()
+
+    # 拿 .gitignore 文件的提交记录来测试
+    commits = get_file_commits(repo_path, ".gitignore")
+    assert len(commits) > 0
+    assert commits[0]["hash"]
+    assert commits[0]["author"]
+    assert commits[0]["date"]
+    assert commits[0]["message"]
