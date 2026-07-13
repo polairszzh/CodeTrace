@@ -1,7 +1,7 @@
 import subprocess
 from pathlib import Path
 
-CACHE_DIR = Path("./tmp/codetrace")
+CACHE_DIR = Path("G:/tmp/codetrace")
 
 
 def clone_or_pull_repo(repo_url: str) -> Path:
@@ -61,3 +61,48 @@ def get_file_commits(repo_path: Path, file_path: str) -> list[dict]:
             "message": parts[3],
         })
     return commits
+
+
+def get_commit_diff_stats(repo_path: Path, commit_hash: str) -> dict:
+    """
+    获取指定提交的差异统计信息，包括新增行数、删除行数和修改行数。
+
+    Args:
+        repo_path (Path): 仓库的路径。
+        commit_hash (str): 提交的哈希值。
+    
+    Returns:
+        dict: {"additions": int, "deletions": int, "files_changed": int}
+    """
+    result = subprocess.run(
+        ["git", "show", "--stat", "--format=", commit_hash],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=15,
+    )
+
+    additions = 0
+    deletions = 0
+    files_changed = 0
+
+    for line in result.stdout.strip().split("\n"):
+        if not line.strip():
+            continue
+        files_changed += 1
+        # 解析 "1 file changed, 2 insertions(+), 1 deletion(-)" 这种格式
+        if "insertion" in line or "deletion" in line:
+            # 简单按逗号分割，然后提取数字
+            for part in line.split(","):
+                part = part.strip()
+                if "insertion" in part:
+                    additions += int(part.split()[0])
+                elif "deletion" in part:
+                    deletions += int(part.split()[0])
+
+    return {
+        "additions": additions,
+        "deletions": deletions,
+        "files_changed": files_changed,
+    }
