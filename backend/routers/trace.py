@@ -4,6 +4,7 @@ from models.schemas import TraceRequest, TraceResponse, TimelineNode, DiffStats
 from services.git_service import clone_or_pull_repo, get_file_commits, get_commit_diff_stats
 from services.github_service import GitHubClient
 from services.llm_service import LLMService
+from services.ast_service import trace_function_across_commits
 
 router = APIRouter()
 
@@ -78,3 +79,30 @@ async def trace_file(req: TraceRequest):
         timeline=timeline,
         commit_count=len(timeline),
     )
+
+@router.post("/trace/function")
+async def trace_function(req: TraceRequest, function_name: str = ""):
+    if not function_name:
+        raise HTTPException(status_code=400, detail="请提供函数名")
+    
+    try:
+        parts = req.repo_url.rstrip("/").split("/")
+        repo_owner, repo_name = parts[-2], parts[-1].replace(".git", "")
+        repo_full = f"{repo_owner}/{repo_name}"
+    except Exception:
+        raise HTTPException(status_code=400, detail="仓库地址格式有误")
+    
+    try:
+        repo_path = clone_or_pull_repo(req.repo_url)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"仓库操作失败：{str(e)}")
+    
+    history = trace_function_across_commits(repo_path, req.file_path, function_name)
+
+    return {
+        "repo": repo_full,
+        "file_path": req.file_path,
+        "function_name": function_name,
+        "history": history,
+        "commit_count": len(history),
+    }

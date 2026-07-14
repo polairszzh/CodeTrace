@@ -106,3 +106,27 @@ def get_commit_diff_stats(repo_path: Path, commit_hash: str) -> dict:
         "deletions": deletions,
         "files_changed": files_changed,
     }
+
+def get_file_content_at_commit(repo_path: Path, commit_hash: str, file_path: str) -> str:
+    """
+    获取指定提交中某个文件的内容。
+
+    Args:
+        repo_path (Path): 仓库的路径。
+        commit_hash (str): 提交的哈希值。
+        file_path (str): 文件在仓库中的相对路径。
+    
+    Returns:
+        str: 文件内容的字符串。
+    """
+    result = subprocess.run(
+        ["git", "show", f"{commit_hash}:{file_path}"],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+        timeout=15,
+    )
+    return result.stdout
+
