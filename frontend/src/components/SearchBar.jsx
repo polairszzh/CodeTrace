@@ -3,6 +3,7 @@ import { useState } from "react";
 function SearchBar({ onSearch }) {
     const [repoUrl, setRepoUrl] = useState('')
     const [filePath, setFilePath] = useState('')
+    const [functionName, setFunctionName] = useState('')
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState('')
 
@@ -10,7 +11,10 @@ function SearchBar({ onSearch }) {
         setLoading(true)
         setError('')
         try {
-            const res = await fetch('/api/trace', {
+            const url = functionName
+                ? `/api/trace/function?function_name=${encodeURIComponent(functionName)}`
+                : '/api/trace'
+            const res = await fetch(url, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -40,6 +44,12 @@ function SearchBar({ onSearch }) {
                     placeholder="文件路径"
                     value={filePath}
                     onChange={(e) => setFilePath(e.target.value)}
+                    style={{ flex: 1, padding: '8px' }}
+                />
+                <input
+                    placeholder="函数名 （可选，留空则追溯整个文件）"
+                    value={functionName}
+                    onChange={(e) => setFunctionName(e.target.value)}
                     style={{ flex: 1, padding: '8px' }}
                 />
                 <button onClick={handleSearch} disabled={loading}>

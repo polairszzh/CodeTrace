@@ -87,3 +87,27 @@ class LLMService:
             return json.loads(result)
         except json.JSONDecodeError:
             return {"change_type": "unknown", "summary": commit_message[:50]}
+        
+    def trace_function_change(
+        self,
+        function_name: str,
+        old_body: str,
+        new_file_functions: list[str],
+    ) -> str | None:
+        prompt = f"""Function "{function_name}" disappeared after a commit.
+            The new commit has these functions: {new_file_functions}
+
+            Old version of the function:
+            ```python
+            {old_body[:1500]}
+
+            Did this function get renamed, split, or merged? If renamed, what is the new name?
+            Output one word only: the new function name, or "DELETED" if it's gone, or "UNKNOWN".
+        """
+
+        messages = [
+            {"role": "system", "content": "You are a code analysis assistant. Be concise."},
+            {"role": "user", "content": prompt},
+        ]
+        result = self._call(messages)
+        return result.strip() if result else None
