@@ -13,55 +13,64 @@ class AgentPlanner:
         )
 
     def run(self, goal: str, max_steps: int = 20) -> list[dict]:
-      messages = [
-          {
-              "role": "system",
-              "content": (
-                  "你是一个代码仓库分析 Agent。你可以使用工具探索仓库。\n\n"
-                  f"可用工具:\n{self.tool_registry.list_descriptions()}\n\n"
-                  "分析策略:\n"
-                  "1. 首先用 repo_health 或 git_hotspots 扫描项目热点\n"
-                  "2. 用 file_bulk_summary 批量了解热点文件的活跃程度\n"
-                  "3. 对 bug 修复率超过 30% 的文件，用 trace_function 深度追溯关键函数\n"
-                  "4. 对关键 commit，用 pr_info 查看 PR 讨论背景\n\n"
-                  "最终报告格式 (JSON only，不要其他文本):\n"
-                  '{"repo": "仓库名",\n'
-                  ' "hotspots": [{"file": "路径", "changes": 次数, "bug_ratio": 比例}],\n'
-                  ' "at_risk": [{"file": "路径", "reason": "风险原因"}],\n'
-                  ' "stable_modules": ["稳定模块..."],\n'
-                  ' "summary": "一段中文总结",\n'
-                  ' "recommendations": ["建议1", "建议2"]}'
-              ),
-          },
-          {"role": "user", "content": goal},
-      ]
-      steps = []
+        tools_desc = self.tool_registry.list_descriptions()
 
-      for i in range(max_steps):
-        response = self.llm._call_with_tools(
-        messages=messages,
-        tools=self.tool_registry.list_schemas(),
-        )
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是一个代码仓库分析 Agent。用工具探索仓库，最后用中文总结。\n\n"
+                    f"可用工具:\n{tools_desc}\n\n"
+                    "规则:\n"
+                    "- 每次回复只能做一件事：要么调用一个工具，要么给出最终总结\n"
+                    "- 调用工具时，回复必须以 TOOL: 开头，后跟工具名和 JSON 参数:\n"
+                    '  TOOL: repo_health {"repo_url": "...", "top_n": 3}\n'
+                    "- 给出总结时，直接输出中文文本，不要带 TOOL: 前缀\n"
+                    "- 调用 3-5 个工具后就该给总结了"
+                ),
+            },
+            {"role": "user", "content": goal},
+        ]
+        steps = []
 
-        tool_calls = response.get("tool_calls")
-        if tool_calls:
-            tc = tool_calls[0]
-            tool_name = tc["function"]["name"]
-            try:
-                args = json.loads(tc["function"]["arguments"])
-            except json.JSONDecodeError:
-                args = {}
+        for i in range(max_steps):
+            response = self.llm._call(messages, temperature=0.2)
+            text = (response or "").strip()
 
-            tool = self.tool_registry.get(tool_name)
-            result = tool.execute(**args) if tool else f"工具 {tool_name} 不存在"
+            if not text:
+                steps.append({"step": i + 1, "error": "LLM 返回为空"})
+                break
 
-            messages.append(response)
-            messages.append({"role": "tool", "tool_call_id": tc["id"], "content": json.dumps(result, ensure_ascii=False)})
+            if text.startswith("TOOL:"):
+                try:
+                    first_newline = text.index("\n")
+                    tool_line = text[:first_newline]
+                except ValueError:
+                    tool_line = text
+                tool_line = tool_line[5:].strip()
+                parts = tool_line.split(" ", 1)
+                tool_name = parts[0].strip()
+                args_str = parts[1].strip() if len(parts) > 1 else "{}"
+                try:
+                    args = json.loads(args_str)
+                except json.JSONDecodeError:
+                    args = {}
 
-            steps.append({"step": i + 1, "tool": tool_name, "args": args, "result": result})
-        else:
-            answer = response.get("content", "")
-            steps.append({"step": i + 1, "final": answer})
-            break
+                tool = self.tool_registry.get(tool_name)
+                if not tool:
+                    result = f"工具 {tool_name} 不存在，可用: {self.tool_registry.list_names()}"
+                else:
+                    try:
+                        result = tool.execute(**args)
+                    except Exception as e:
+                        result = f"执行失败: {str(e)}"
 
-      return steps
+                messages.append({"role": "assistant", "content": text})
+                result_str = json.dumps(result, ensure_ascii=False, default=str)[:2000]
+                messages.append({"role": "user", "content": f"工具返回: {result_str}"})
+                steps.append({"step": i + 1, "tool": tool_name, "args": args, "result": result})
+            else:
+                steps.append({"step": i + 1, "final": text})
+                break
+
+        return steps

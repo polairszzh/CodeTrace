@@ -116,15 +116,17 @@ async def agent_analyze(req: TraceRequest, goal: str = ""):
     if not goal:
         goal = f"分析仓库 {req.repo_url}, 找出变更频繁的文件，对关键函数做深度追溯，输出项目活跃度报告"
 
-    try:
-        clone_or_pull_repo(req.repo_url)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"仓库操作失败：{str(e)}")
-    
     planner = AgentPlanner(registry)
 
     def generate():
         import json
+        yield "data: " + json.dumps({"step": 0, "status": "Agent 正在准备，首次分析需要 clone 仓库..."}, ensure_ascii=False) + "\n\n"
+        try:
+            clone_or_pull_repo(req.repo_url)
+        except Exception as e:
+            yield "data: " + json.dumps({"step": 0, "error": f"仓库操作失败: {str(e)}"}, ensure_ascii=False) + "\n\n"
+            yield "data: [DONE]\n\n"
+            return
         steps = planner.run(goal + f'\n仓库地址: {req.repo_url}', max_steps=20)
         for step in steps:
             yield f'data: {json.dumps(step, ensure_ascii=False)}\n\n'

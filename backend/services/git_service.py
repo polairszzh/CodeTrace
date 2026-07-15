@@ -45,6 +45,7 @@ def get_file_commits(repo_path: Path, file_path: str) -> list[dict]:
         cwd=repo_path,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=True,
         timeout=30
     )
