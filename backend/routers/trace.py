@@ -105,4 +105,5 @@ async def trace_function(req: TraceRequest, function_name: str = ""):
         "function_name": function_name,
         "history": history,
         "commit_count": len(history),
+        "note": "未在文件历史中找到该函数，请检查函数名是否正确" if not history else None,
     }

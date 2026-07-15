@@ -93,21 +93,24 @@ class LLMService:
         function_name: str,
         old_body: str,
         new_file_functions: list[str],
-    ) -> str | None:
+    ) -> dict | None:
         prompt = f"""Function "{function_name}" disappeared after a commit.
-            The new commit has these functions: {new_file_functions}
+The new commit has these functions: {new_file_functions}
 
-            Old version of the function:
-            ```python
-            {old_body[:1500]}
+Old version of the function:
+```python
+{old_body[:1500]}
+```
 
-            Did this function get renamed, split, or merged? If renamed, what is the new name?
-            Output one word only: the new function name, or "DELETED" if it's gone, or "UNKNOWN".
-        """
-
+Analyze what happened to this function. Output ONLY valid JSON:
+{{"action": "renamed|split|merged|deleted|unknown", "new_name": "the new function name or empty string", "note": "one sentence in Chinese explaining what you think happened"}}
+"""
         messages = [
-            {"role": "system", "content": "You are a code analysis assistant. Be concise."},
+            {"role": "system", "content": "You are a code analysis assistant. Output only valid JSON."},
             {"role": "user", "content": prompt},
         ]
         result = self._call(messages)
-        return result.strip() if result else None
+        try:
+            return json.loads(result) if result else None
+        except json.JSONDecodeError:
+            return {"action": "unknown", "new_name": "", "note": "LLM 解析失败"}
