@@ -131,3 +131,21 @@ def get_file_content_at_commit(repo_path: Path, commit_hash: str, file_path: str
     )
     return result.stdout
 
+def get_top_changed_files(repo_path: Path, top_n: int = 10) -> list[str]:
+      """扫描整个仓库，返回变更频率最高的前 N 个文件路径。"""
+      from collections import Counter
+
+      result = subprocess.run(
+          ["git", "log", "--pretty=format:", "--name-only"],
+          cwd=repo_path,
+          capture_output=True,
+          text=True,
+          encoding="utf-8",
+          timeout=30,
+      )
+      counter = Counter()
+      for line in result.stdout.strip().split("\n"):
+          line = line.strip()
+          if line:
+              counter[line] += 1
+      return [f for f, _ in counter.most_common(top_n)]
