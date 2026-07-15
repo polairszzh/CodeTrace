@@ -19,6 +19,9 @@ function Timeline({ data }) {
                 {isFunctionMode && <> · 函数 <strong>{data.function_name}</strong></>}
                 · {data.commit_count} 次提交
             </p>
+            {data.note && nodes.length === 0 && (
+                <div style={{ padding: '20px', color: '#d69e2e', textAlign: 'center' }}>{data.note}</div>
+            )}
             {nodes.map((node) => {
                 const func = node.function
                 const changeType = node.change_type
