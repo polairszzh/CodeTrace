@@ -149,3 +149,69 @@ def get_top_changed_files(repo_path: Path, top_n: int = 10) -> list[str]:
           if line:
               counter[line] += 1
       return [f for f, _ in counter.most_common(top_n)]
+
+def get_repo_health_stats(repo_path: Path, top_n: int = 10) -> list[dict]:
+    """
+    扫描仓库，返回每个文件的变更统计（变更次数、bug 修复次数、最近活跃情况）。
+    用于 Agent 生成代码健康度报告。
+    """
+    from collections import Counter
+
+    result = subprocess.run(
+        ["git", "log", "--pretty=format:%s", "--name-only"],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+    )
+
+    lines = result.stdout.strip().split("\n")
+    file_counter = Counter()
+    bug_counter = Counter()
+    current_message = ""
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            current_message = ""
+            continue
+        if not line.startswith("backend/") and not line.startswith("frontend/") and not line.startswith("extension/"):
+            current_message = line
+            continue
+        file_counter[line] += 1
+        # 简单启发式：包含 fix/bug/hotfix/patch 的 message 标记为 bug 修复
+        msg_lower = current_message.lower()
+        if any(kw in msg_lower for kw in ("fix", "bug", "hotfix", "patch", "修复", "resolve", "issue")):
+            bug_counter[line] += 1
+
+    stats = []
+    for filepath, total in file_counter.most_common(top_n):
+        bugs = bug_counter.get(filepath, 0)
+        stats.append({
+            "file": filepath,
+            "total_changes": total,
+            "bug_fixes": bugs,
+            "bug_ratio": round(bugs / total, 2) if total > 0 else 0,
+        })
+    return stats
+
+def get_file_bulk_summary(repo_path: Path, file_paths: list[str]) -> list[dict]:
+    """
+    批量获取多个文件的基本信息：每个文件的 commit 数量、最近修改日期、主要贡献者。
+    用于 Agent 快速了解多个热点文件的活跃程度。
+    """
+    summaries = []
+    for fp in file_paths:
+        try:
+            commits = get_file_commits(repo_path, fp)
+            authors = list({c["author"] for c in commits[:20]})
+            summaries.append({
+                "file": fp,
+                "total_commits": len(commits),
+                "latest_date": commits[0]["date"] if commits else None,
+                "top_authors": authors[:5],
+            })
+        except Exception:
+            summaries.append({"file": fp, "error": "无法读取"})
+    return summaries
