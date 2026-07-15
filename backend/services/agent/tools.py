@@ -10,7 +10,7 @@ from services.git_service import (
     get_repo_health_stats,
     get_file_bulk_summary,
 )
-from services.ast_service import trace_function_across_commits, extract_functions
+from services.ast_service import trace_function_across_commits, extract_functions, get_language_for_file
 from services.github_service import GitHubClient
 
 
@@ -126,4 +126,25 @@ registry.register(Tool(
     execute=lambda repo_url, file_paths: get_file_bulk_summary(
         clone_or_pull_repo(repo_url), file_paths
     ),
+))
+
+def _list_functions_at_latest(repo_url: str, file_path: str) -> list[str]:
+    repo_path = clone_or_pull_repo(repo_url)
+    content = get_file_content_at_commit(repo_path, "HEAD", file_path)
+    funcs = extract_functions(content, get_language_for_file(file_path))
+    return [f["name"] for f in funcs]
+
+
+registry.register(Tool(
+    name="list_functions",
+    description="列出某个文件中当前存在的所有函数名。在 trace_function 之前使用，避免猜测不存在的函数名。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "repo_url": {"type": "string", "description": "git 仓库 URL"},
+            "file_path": {"type": "string", "description": "文件相对路径"},
+        },
+        "required": ["repo_url", "file_path"],
+    },
+    execute=lambda repo_url, file_path: _list_functions_at_latest(repo_url, file_path),
 ))
