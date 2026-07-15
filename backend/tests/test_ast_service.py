@@ -1,4 +1,4 @@
-from services.ast_service import extract_functions
+from services.ast_service import extract_functions, JS_LANGUAGE
 
 
 PY_CODE = """
@@ -13,6 +13,24 @@ class Foo:
 
 def add(a, b):
     return a + b
+"""
+
+JS_CODE = """
+function greet(name) {
+    return "hello " + name;
+}
+
+const add = (a, b) => a + b;
+
+class MyClass {
+    method1() {
+        return 1;
+    }
+
+    method2(x) {
+        return x * 2;
+    }
+}
 """
 
 
@@ -40,3 +58,17 @@ def test_empty_code():
 def test_code_without_functions():
     funcs = extract_functions("x = 1\ny = 2\n")
     assert funcs == []
+
+
+def test_extract_js_functions():
+    funcs = extract_functions(JS_CODE, JS_LANGUAGE)
+    names = [f["name"] for f in funcs]
+    assert "greet" in names
+    assert "method1" in names
+    assert "method2" in names
+
+
+def test_extract_js_function_body():
+    funcs = extract_functions(JS_CODE, JS_LANGUAGE)
+    greet = [f for f in funcs if f["name"] == "greet"][0]
+    assert greet["body"].startswith("function greet")
