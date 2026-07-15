@@ -1,0 +1,17 @@
+FROM python:3.12-slim
+
+WORKDIR /app/backend
+
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+# Install backend dependencies
+COPY backend/pyproject.toml backend/uv.lock ./
+RUN uv sync --frozen --no-dev
+
+# Copy backend code
+COPY backend/ ./
+
+EXPOSE 8000
+
+CMD ["uv", "run", "python", "main.py"]

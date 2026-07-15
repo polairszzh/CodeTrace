@@ -1,0 +1,19 @@
+{
+    "manifest_version": 3,
+    "name": "CodeTrace",
+    "version": "1.0",
+    "description": "一键追溯代码变更历史",
+    "host_permissions": [
+        "*://*.github.com/*"
+    ],
+    "content_scripts": [
+        {
+            "matches": [
+                "*://*.github.com/*"
+            ],
+            "js": [
+                "content.js"
+            ]
+        }
+    ]
+}
