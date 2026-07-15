@@ -1,10 +1,13 @@
 import os
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from models.schemas import TraceRequest, TraceResponse, TimelineNode, DiffStats
 from services.git_service import clone_or_pull_repo, get_file_commits, get_commit_diff_stats
 from services.github_service import GitHubClient
 from services.llm_service import LLMService
 from services.ast_service import trace_function_across_commits
+from services.agent import registry
+from services.agent.planner import AgentPlanner
 
 router = APIRouter()
 
@@ -107,3 +110,24 @@ async def trace_function(req: TraceRequest, function_name: str = ""):
         "commit_count": len(history),
         "note": "未在文件历史中找到该函数，请检查函数名是否正确" if not history else None,
     }
+
+@router.post("/agent/analyze")
+async def agent_analyze(req: TraceRequest, goal: str = ""):
+    if not goal:
+        goal = f"分析仓库 {req.repo_url}, 找出变更频繁的文件，对关键函数做深度追溯，输出项目活跃度报告"
+
+    try:
+        clone_or_pull_repo(req.repo_url)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"仓库操作失败：{str(e)}")
+    
+    planner = AgentPlanner(registry)
+
+    def generate():
+        import json
+        steps = planner.run(goal + f'\n仓库地址: {req.repo_url}', max_steps=20)
+        for step in steps:
+            yield f'data: {json.dumps(step, ensure_ascii=False)}\n\n'
+        yield "data: [DONE]\n\n"
+    
+    return StreamingResponse(generate(), media_type="text/event-stream")

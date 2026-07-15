@@ -51,6 +51,30 @@ class LLMService:
             return resp.json()["choices"][0]["message"]["content"]
         except Exception:
             return ""
+        
+    def _call_with_tools(self, messages: list[dict], tools: list[dict], temperature: float = 0.2) -> dict:
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}"
+        }
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temperature,
+            "tools": tools,
+        }
+
+        try:
+            resp = httpx.post(
+                f"{self.base_url}/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=30,
+            )
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]
+        except Exception:
+            return {"content": None, "tool_calls": None}
 
     def classify_and_summarize(
         self,
