@@ -5,7 +5,6 @@ load_dotenv()
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from routers.trace import router as trace_router
 
 app = FastAPI(title="CodeTrace", version="1.0.0")
@@ -19,10 +18,6 @@ app.add_middleware(
 )
 
 app.include_router(trace_router, prefix="/api", tags=["Trace"])
-
-frontend_dir = os.getenv("FRONTEND_DIR", os.path.join(os.path.dirname(__file__), "..", "frontend", "dist"))
-if os.path.isdir(frontend_dir):
-    app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="frontend")
 
 
 if __name__ == "__main__":

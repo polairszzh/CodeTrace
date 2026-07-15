@@ -1,17 +1,27 @@
 services:
-  codetrace:
-    build: .
-    container_name: codetrace
-    ports:
-      - "8000:8000"
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: codetrace-backend
     environment:
       - GITHUB_TOKEN=${GITHUB_TOKEN}
       - LLM_API_KEY=${LLM_API_KEY}
       - LLM_BASE_URL=${LLM_BASE_URL:-https://api.deepseek.com/v1}
       - LLM_MODEL=${LLM_MODEL:-deepseek-v4-pro}
-      - FRONTEND_DIR=/app/frontend/dist
     volumes:
       - codetrace_cache:/tmp/codetrace
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: codetrace-frontend
+    ports:
+      - "${PORT:-8000}:80"
+    depends_on:
+      - backend
     restart: unless-stopped
 
 volumes:
