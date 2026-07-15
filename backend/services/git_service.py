@@ -1,7 +1,8 @@
+import os
 import subprocess
 from pathlib import Path
 
-CACHE_DIR = Path("G:/tmp/codetrace")
+CACHE_DIR = Path(os.getenv("CODETRACE_CACHE", "/tmp/codetrace"))
 
 
 def clone_or_pull_repo(repo_url: str) -> Path:
