@@ -138,3 +138,55 @@ Analyze what happened to this function. Output ONLY valid JSON:
             return json.loads(result) if result else None
         except json.JSONDecodeError:
             return {"action": "unknown", "new_name": "", "note": "LLM 解析失败"}
+
+    def match_function_across_files(
+        self,
+        function_name: str,
+        old_body: str,
+        candidates: list[dict],
+    ) -> dict | None:
+        """
+        函数在某次 commit 后从原文件消失，在多个候选文件/函数中找出哪个
+        最有可能是该函数的后继（被重命名/拆分/合并到其他文件）。
+
+        Args:
+            function_name: 原函数名。
+            old_body: 原函数体。
+            candidates: 候选函数列表，每项含 {file, name, body}。
+
+        Returns:
+            {"matched": True, "file": "...", "name": "...", "note": "..."}
+            或 {"matched": False, "note": "..."}
+        """
+        if not candidates:
+            return {"matched": False, "note": "无可候选函数"}
+
+        # 精简候选：只传 name + body 前 200 字符给 LLM
+        candidate_text = "\n---\n".join(
+            f"文件: {c['file']}\n函数: {c['name']}\n代码:\n{c.get('body', '')[:200]}"
+            for c in candidates[:8]
+        )
+        prompt = f"""函数 "{function_name}" 在某次提交后从原文件中消失，疑似被移动或改名到其他文件。
+
+旧函数代码:
+```python
+{old_body[:1500]}
+```
+
+其他文件中找到的候选函数:
+{candidate_text}
+
+请分析哪个候选函数最有可能是原函数的后继（改名、拆分、合并到其他文件）。如果都不像，返回 matched: false。
+
+只输出 JSON:
+{{"matched": true/false, "file": "候选所在文件路径", "name": "候选函数名", "note": "一句话中文说明判断理由"}}
+"""
+        messages = [
+            {"role": "system", "content": "You are a code analysis assistant. Output only valid JSON."},
+            {"role": "user", "content": prompt},
+        ]
+        result = self._call(messages)
+        try:
+            return json.loads(result) if result else {"matched": False, "note": "LLM 返回为空"}
+        except json.JSONDecodeError:
+            return {"matched": False, "note": "LLM 返回解析失败"}

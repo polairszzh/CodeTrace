@@ -2,7 +2,7 @@ import tree_sitter_python as tspython
 import tree_sitter_javascript as tsjavascript
 from tree_sitter import Language, Parser
 from pathlib import Path
-from services.git_service import get_file_commits, get_file_content_at_commit
+from services.git_service import get_file_commits, get_file_content_at_commit, list_files_changed_in_commit, list_files_at_commit
 from services.llm_service import LLMService
 
 PY_LANGUAGE = Language(tspython.language())
@@ -51,40 +51,115 @@ def extract_functions(source_code: str, language=None) -> list[dict]:
     walk(tree.root_node)
     return functions
 
-def trace_function_across_commits(repo_path: Path, file_path: str, function_name: str) -> list[dict]:
-    """
-    追踪一个函数在文件变更历史中的演变。
 
-    遍历文件的所有 commit，在每个版本中用 AST 解析函数定义，
-    返回该函数在各个 commit 中的状态列表（按 commit 时间倒序）。
+def search_function_across_files(
+    repo_path: Path,
+    commit_hash: str,
+    function_name: str,
+    old_body: str = "",
+    exclude_file: str = "",
+) -> list[dict]:
+    """
+    在指定 commit 的所有文件中搜索同名/同语义函数。
+    优先查本次 commit 变更过的文件（更可能是迁移目标），再查全量文件。
+    精确名称匹配不到时，用 LLM 做语义匹配（改名后跨文件迁移）。
 
     Args:
-        repo_path: 仓库本地缓存路径。
-        file_path: 要追溯的文件路径（相对于仓库根目录）。
-        function_name: 要追踪的函数名。
+        repo_path: 仓库本地路径。
+        commit_hash: commit 哈希。
+        function_name: 要搜索的函数名。
+        old_body: 原函数体，用于 LLM 语义匹配兜底。
+        exclude_file: 排除的原始文件名（函数消失的那个文件）。
 
     Returns:
-        list[dict]: 按时间倒序，每个元素包含:
-            - commit_hash: commit 哈希
-            - author: 作者
-            - date: 提交日期
-            - message: commit message
-            - function: 该版本中函数的信息（name, start_line, end_line, body）
+        list[dict]: 找到的匹配，每项含 {file, name, start_line, end_line, body}
+    """
+    results = []
+
+    # 缩小搜索范围：优先在本次 commit 变更过的文件中找
+    changed_files = list_files_changed_in_commit(repo_path, commit_hash)
+    candidates = changed_files
+    if not candidates:
+        candidates = list_files_at_commit(repo_path, commit_hash)
+
+    # 第一阶段：精确名称匹配
+    all_functions_found = []
+    for fp in candidates:
+        fp = fp.strip()
+        if not fp or fp == exclude_file:
+            continue
+        try:
+            content = get_file_content_at_commit(repo_path, commit_hash, fp)
+        except Exception:
+            continue
+
+        lang = get_language_for_file(fp)
+        try:
+            functions = extract_functions(content, lang)
+        except Exception:
+            continue
+
+        for fn in functions:
+            all_functions_found.append({"file": fp, **fn})
+            if fn["name"] == function_name:
+                results.append({"file": fp, **fn})
+
+    if results:
+        return results
+
+    # 第二阶段：同名找不到且提供了 old_body → LLM 语义匹配
+    if not old_body or not all_functions_found:
+        return []
+
+    from services.llm_service import LLMService
+    llm = LLMService()
+    match = llm.match_function_across_files(
+        function_name, old_body,
+        [{"file": f["file"], "name": f["name"], "body": f.get("body", "")}
+         for f in all_functions_found],
+    )
+    if match and match.get("matched"):
+        file_match = match.get("file", "")
+        name_match = match.get("name", "")
+        for fn in all_functions_found:
+            if fn["file"] == file_match and fn["name"] == name_match:
+                fn["llm_note"] = match.get("note", "LLM 语义匹配")
+                return [fn]
+
+    return []
+
+def trace_function_across_commits(repo_path: Path, file_path: str, function_name: str) -> dict:
+    """
+    追踪一个函数在文件变更历史中的演变，支持跨文件迁移追踪。
+
+    遍历文件的所有 commit，在每个版本中用 AST 解析函数定义。
+    如果函数在某次 commit 后从当前文件消失，自动搜索其他文件，
+    找到后继则记录迁移路径并接续追溯。
+
+    Returns:
+        dict 包含:
+        - history: list[dict] 按时间倒序的提交记录
+        - migration_path: list[dict] 迁移事件列表，每项含
+          {from_file, to_file, from_func, to_func, commit_hash, note}
     """
     commits = get_file_commits(repo_path, file_path)
     history = []
+    migration_path = []
     last_known_body = None
-    llm = LLMService() # 读环境变量初始化
+    llm = LLMService()
 
-    lang = get_language_for_file(file_path)
+    current_file = file_path
+    current_func = function_name
+    current_lang = get_language_for_file(current_file)
+
     for c in commits:
         try:
-            content = get_file_content_at_commit(repo_path, c["hash"], file_path)
+            content = get_file_content_at_commit(repo_path, c["hash"], current_file)
         except Exception:
-            continue    # 该 commit 文件可能还不存在
-        
-        functions = extract_functions(content, lang)
-        matched = [f for f in functions if f["name"] == function_name]
+            continue
+
+        functions = extract_functions(content, current_lang)
+        matched = [f for f in functions if f["name"] == current_func]
 
         if matched:
             history.append({
@@ -93,12 +168,18 @@ def trace_function_across_commits(repo_path: Path, file_path: str, function_name
                 "date": c["date"],
                 "message": c["message"],
                 "function": matched[0],
+                "file": current_file,
             })
             last_known_body = matched[0]["body"]
-        elif last_known_body and functions:
-            # AST 找不到同名函数，尝试 LLM 模糊匹配
+            continue
+
+        # 函数在当前文件消失了 → 先查同名文件内改名，再搜跨文件
+        found_in_migration = False
+
+        # 阶段1：同文件 LLM 改名匹配（现有逻辑）
+        if last_known_body and functions:
             new_names = [f["name"] for f in functions]
-            result = llm.trace_function_change(function_name, last_known_body, new_names)
+            result = llm.trace_function_change(current_func, last_known_body, new_names)
             if result and result.get("action") in ("renamed", "split", "merged"):
                 name_found = result.get("new_name", "")
                 new_matched = [f for f in functions if f["name"] == name_found]
@@ -109,17 +190,70 @@ def trace_function_across_commits(repo_path: Path, file_path: str, function_name
                         "date": c["date"],
                         "message": c["message"],
                         "function": new_matched[0],
+                        "file": current_file,
                         "llm_note": result.get("note", f"疑似重命名为 {name_found}"),
                     })
                     last_known_body = new_matched[0]["body"]
-                    continue
+                    current_func = name_found
+                    found_in_migration = True
+
+        # 阶段2：跨文件搜索（同文件改名没找到时触发）
+        if not found_in_migration and last_known_body:
+            cross_results = search_function_across_files(
+                repo_path, c["hash"], current_func,
+                old_body=last_known_body,
+                exclude_file=current_file,
+            )
+            if cross_results:
+                target = cross_results[0]
+                target_file = target["file"]
+                target_name = target["name"]
+                note = target.get("llm_note", f"迁移至 {target_file}")
+
+                history.append({
+                    "commit_hash": c["hash"],
+                    "author": c["author"],
+                    "date": c["date"],
+                    "message": c["message"],
+                    "function": {"name": target_name, "start_line": target["start_line"],
+                                 "end_line": target["end_line"], "body": target.get("body", "")},
+                    "file": target_file,
+                    "llm_note": note,
+                    "migration": True,
+                })
+                migration_path.append({
+                    "from_file": current_file,
+                    "to_file": target_file,
+                    "from_func": current_func,
+                    "to_func": target_name,
+                    "commit_hash": c["hash"],
+                    "note": note,
+                })
+                # 切到新文件，接续追溯后续 commit
+                current_file = target_file
+                current_func = target_name
+                current_lang = get_language_for_file(current_file)
+                last_known_body = target.get("body", "")
+                found_in_migration = True
+
+        if not found_in_migration:
+            # 完全消失了
+            note = ""
+            if last_known_body and functions:
+                r = llm.trace_function_change(current_func, last_known_body, [f["name"] for f in functions])
+                if r:
+                    note = r.get("note", "")
             history.append({
                 "commit_hash": c["hash"],
                 "author": c["author"],
                 "date": c["date"],
                 "message": c["message"],
                 "function": None,
-                "llm_note": result.get("note", "函数已消失") if result else "函数已消失，LLM 无法定位",
+                "file": current_file,
+                "llm_note": note or "函数已消失",
             })
-    
-    return history
+
+    return {
+        "history": history,
+        "migration_path": migration_path,
+    }
