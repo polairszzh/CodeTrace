@@ -9,9 +9,14 @@ from services.git_service import (
     get_top_changed_files,
     get_repo_health_stats,
     get_file_bulk_summary,
+    get_file_health_stats,
+    get_recent_commit_groups,
+    get_co_change_trends,
+    get_file_change_context,
 )
 from services.ast_service import trace_function_across_commits, extract_functions, get_language_for_file
 from services.github_service import GitHubClient
+from services.llm_service import LLMService
 
 
 github = GitHubClient(token=os.getenv("GITHUB_TOKEN", ""))
@@ -109,6 +114,30 @@ registry.register(Tool(
 ))
 
 registry.register(Tool(
+    name="file_health",
+    description="升级版健康度检测：扫描仓库热点文件，返回真实 churn（新增/删除行数）、时效加权分数、commit messages。再结合 LLM 语义分析给出 bug 概率和风险等级。比 repo_health 更精确，推荐优先使用。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "repo_url": {"type": "string", "description": "git 仓库 URL"},
+            "top_n": {"type": "integer", "description": "返回前 N 个文件，默认 20"},
+        },
+        "required": ["repo_url"],
+    },
+    execute=lambda repo_url, top_n=20: _analyze_file_health(
+        clone_or_pull_repo(repo_url), top_n
+    ),
+))
+
+def _analyze_file_health(repo_path, top_n=20):
+    """执行升级版健康度分析：churn 数据 + LLM 语义分类"""
+    stats = get_file_health_stats(repo_path, top_n)
+    if not stats:
+        return stats
+    llm = LLMService()
+    return llm.classify_file_health(stats)
+
+registry.register(Tool(
     name="file_bulk_summary",
     description="批量获取多个文件的概要信息：每个文件的 commit 总数、最近修改日期、主要贡献者列表。当需要快速了解一批文件的活跃程度时使用。",
     parameters={
@@ -148,3 +177,89 @@ registry.register(Tool(
     },
     execute=lambda repo_url, file_path: _list_functions_at_latest(repo_url, file_path),
 ))
+
+registry.register(Tool(
+    name="analyze_refactor",
+    description="检测最近 commit 中的跨文件重构事件。分析多个 commit 的变更文件组，识别哪些是同一重构行为（如模块拆分、重命名、架构迁移）。返回合并后的重构事件列表。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "repo_url": {"type": "string", "description": "git 仓库 URL"},
+            "count": {"type": "integer", "description": "分析最近 N 个 commit，默认 15"},
+        },
+        "required": ["repo_url"],
+    },
+    execute=lambda repo_url, count=15: _detect_refactors(
+        clone_or_pull_repo(repo_url), count
+    ),
+))
+
+
+def _detect_refactors(repo_path, count=15):
+    """检测跨文件重构事件"""
+    from services.llm_service import LLMService
+
+    groups = get_recent_commit_groups(repo_path, count)
+    if not groups:
+        return []
+    llm = LLMService()
+    return llm.detect_refactor_events(groups)
+
+
+registry.register(Tool(
+    name="coupling_risk",
+    description="检测仓库中文件耦合关系的变化趋势。比较最近 30 天与上一 30 天的 co-change 数据，识别哪些模块的耦合面正在扩大，是否存在跨模块耦合侵蚀。返回风险文件列表及改进建议。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "repo_url": {"type": "string", "description": "git 仓库 URL"},
+        },
+        "required": ["repo_url"],
+    },
+    execute=lambda repo_url: _analyze_coupling(clone_or_pull_repo(repo_url)),
+))
+
+
+def _analyze_coupling(repo_path):
+    from services.llm_service import LLMService
+
+    trends = get_co_change_trends(repo_path, window_days=30)
+    if not trends:
+        return {"coupling_risk": [], "note": "数据不足，仓库活跃度较低或提交历史不够长"}
+    llm = LLMService()
+    trends = llm.analyze_coupling_trends(trends)
+    high_risk = [t for t in trends if t.get("risk") == "high" or (t.get("coupling_growth", 0) > 0.3 and t.get("recent_partners", 0) > 3)]
+    return {
+        "total_files": len(trends),
+        "high_risk_count": len(high_risk),
+        "coupling_risk": trends,
+        "note": "coupling_growth > 0.3 且 partner > 3 表示耦合面显著扩大，建议关注",
+    }
+
+
+registry.register(Tool(
+    name="explain_changes",
+    description="获取文件最近变更的详细分析。综合 commit message 和代码 diff，解释每个变更的原因、目的和改动量。不只是看改了啥，而是理解为什么改。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "repo_url": {"type": "string", "description": "git 仓库 URL"},
+            "file_path": {"type": "string", "description": "文件相对路径"},
+            "count": {"type": "integer", "description": "分析最近 N 个 commit，默认 10"},
+        },
+        "required": ["repo_url", "file_path"],
+    },
+    execute=lambda repo_url, file_path, count=10: _explain_changes(
+        clone_or_pull_repo(repo_url), file_path, count
+    ),
+))
+
+
+def _explain_changes(repo_path, file_path, count=10):
+    from services.llm_service import LLMService
+
+    contexts = get_file_change_context(repo_path, file_path, count)
+    if not contexts:
+        return {"changes": [], "note": "该文件没有足够的变更记录"}
+    llm = LLMService()
+    return {"changes": llm.explain_change_reason(contexts)}
