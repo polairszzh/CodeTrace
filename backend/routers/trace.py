@@ -8,6 +8,7 @@ from services.llm_service import LLMService
 from services.ast_service import trace_function_across_commits
 from services.agent import registry
 from services.agent.planner import AgentPlanner
+from services.agent.graph import run_agent
 
 router = APIRouter()
 
@@ -142,3 +143,25 @@ async def agent_analyze(req: TraceRequest, goal: str = ""):
         yield "data: [DONE]\n\n"
     
     return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+@router.post("/graph/analyze")
+async def graph_analyze(req: TraceRequest, goal: str = ""):
+    if not goal:
+        goal = f"分析仓库 {req.repo_url}, 找出变更频繁的文件，对关键函数做深度追溯，输出项目活跃度报告"
+
+    try:
+        clone_or_pull_repo(req.repo_url)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"仓库操作失败：{str(e)}")
+
+    result = run_agent(registry, goal, repo_url=req.repo_url, max_steps=15)
+
+    return {
+        "goal": goal,
+        "repo_url": req.repo_url,
+        "step_count": result["step_count"],
+        "findings_count": len(result["findings"]),
+        "final_report": result.get("final_report"),
+        "error": result.get("error"),
+    }

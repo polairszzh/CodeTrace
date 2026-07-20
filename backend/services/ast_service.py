@@ -237,21 +237,22 @@ def trace_function_across_commits(repo_path: Path, file_path: str, function_name
                 found_in_migration = True
 
         if not found_in_migration:
-            # 完全消失了
-            note = ""
-            if last_known_body and functions:
-                r = llm.trace_function_change(current_func, last_known_body, [f["name"] for f in functions])
-                if r:
-                    note = r.get("note", "")
-            history.append({
-                "commit_hash": c["hash"],
-                "author": c["author"],
-                "date": c["date"],
-                "message": c["message"],
-                "function": None,
-                "file": current_file,
-                "llm_note": note or "函数已消失",
-            })
+            # 完全消失了（只在至少见过一次函数后才记录消失）
+            if last_known_body:
+                note = ""
+                if functions:
+                    r = llm.trace_function_change(current_func, last_known_body, [f["name"] for f in functions])
+                    if r:
+                        note = r.get("note", "")
+                history.append({
+                    "commit_hash": c["hash"],
+                    "author": c["author"],
+                    "date": c["date"],
+                    "message": c["message"],
+                    "function": None,
+                    "file": current_file,
+                    "llm_note": note or "函数已消失",
+                })
 
     return {
         "history": history,
