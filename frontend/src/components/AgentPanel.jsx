@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 
 function AgentPanel() {
     const [repoUrl, setRepoUrl] = useState('')
@@ -7,6 +7,15 @@ function AgentPanel() {
     const [steps, setSteps] = useState([])
     const [finalReport, setFinalReport] = useState(null)
     const [error, setError] = useState('')
+
+    // 从 URL 参数读取仓库地址（由扩展打开时自动填入）
+    useEffect(() => {
+        const params = new URLSearchParams(window.location.search)
+        const repo = params.get('repo')
+        if (repo) {
+            setRepoUrl(repo)
+        }
+    }, [])
 
     const handleAnalyze = async () => {
         setRunning(true)

@@ -100,15 +100,24 @@ async def trace_function(req: TraceRequest, function_name: str = ""):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"仓库操作失败：{str(e)}")
     
-    history = trace_function_across_commits(repo_path, req.file_path, function_name)
+    result = trace_function_across_commits(repo_path, req.file_path, function_name)
+    history = result["history"]
+    migration_path = result.get("migration_path", [])
+
+    note = None
+    if not history:
+        note = "未在文件历史中找到该函数，请检查函数名是否正确"
+    elif migration_path:
+        note = f"该函数发生了 {len(migration_path)} 次跨文件迁移"
 
     return {
         "repo": repo_full,
         "file_path": req.file_path,
         "function_name": function_name,
         "history": history,
+        "migration_path": migration_path,
         "commit_count": len(history),
-        "note": "未在文件历史中找到该函数，请检查函数名是否正确" if not history else None,
+        "note": note,
     }
 
 @router.post("/agent/analyze")

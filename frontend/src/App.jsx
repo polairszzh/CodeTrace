@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import SearchBar from "./components/SearchBar"
 import Timeline from "./components/Timeline"
 import AgentPanel from "./components/AgentPanel"
@@ -6,6 +6,14 @@ import AgentPanel from "./components/AgentPanel"
 function App() {
   const [timeline, setTimeline] = useState(null)
   const [tab, setTab] = useState("trace")
+
+  // URL 有 repo 参数时默认切到 Agent 分析 tab
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    if (params.get('repo')) {
+      setTab('agent')
+    }
+  }, [])
 
   return (
     <div>
