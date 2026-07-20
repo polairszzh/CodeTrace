@@ -190,3 +190,233 @@ Analyze what happened to this function. Output ONLY valid JSON:
             return json.loads(result) if result else {"matched": False, "note": "LLM 返回为空"}
         except json.JSONDecodeError:
             return {"matched": False, "note": "LLM 返回解析失败"}
+
+    def classify_file_health(self, file_stats: list[dict]) -> list[dict]:
+        """
+        对健康度检测结果做批量语义分类—识别哪些 commit 是 bug 修复、功能新增、重构等。
+        代替旧版关键词匹配（fix/bug 等）。
+
+        Args:
+            file_stats: get_file_health_stats 的输出，每项含 file, total_commits, commit_messages。
+
+        Returns:
+            每项追加 semantic_bug_probability (0-1) 和 notable_pattern 的列表。
+        """
+        if not file_stats:
+            return file_stats
+
+        # 构造批次：传文件路径 + commit messages 给 LLM
+        batch_text = "\n\n".join(
+            f"[{i}] 文件: {s['file']} (共 {s['total_commits']} 次提交)\n"
+            f"    最近 commit: {'; '.join(s.get('commit_messages', [])[:5])}"
+            for i, s in enumerate(file_stats)
+        )
+
+        prompt = f"""分析以下每个文件的 commit 信息，输出 JSON 数组。
+对每个文件判断：
+
+1. bug_probability (0-1): 这些 commit 中多少比例看起来是 bug 修复？0 = 完全不是，1 = 全是修 bug
+2. risk_level (low/medium/high): 综合 commit 内容和变更频率，这个文件的风险级别
+3. notable_pattern: 一句话说明值得关注的点（中文，20 字内），如果没有则空字符串
+
+只输出 JSON 数组，不要其他文字：
+
+[
+  {{"index": 0, "bug_probability": 0.3, "risk_level": "low", "notable_pattern": "主要为功能新增"}},
+  ...
+]
+
+文件数据:
+{batch_text}
+"""
+        messages = [
+            {"role": "system", "content": "You are a code repository analyst. Output only valid JSON arrays."},
+            {"role": "user", "content": prompt},
+        ]
+        result = self._call(messages)
+        try:
+            import json as _json
+            parsed = _json.loads(result) if result else []
+        except (_json.JSONDecodeError, TypeError):
+            parsed = []
+
+        parsed_by_index = {p.get("index"): p for p in parsed if isinstance(p, dict)}
+        updated_stats = []
+        for i, s in enumerate(file_stats):
+            annotation = parsed_by_index.get(i, {})
+            s["semantic_bug_probability"] = annotation.get("bug_probability", 0.5)
+            s["risk_level"] = annotation.get("risk_level", "medium")
+            s["notable_pattern"] = annotation.get("notable_pattern", "")
+            updated_stats.append(s)
+        return updated_stats
+
+
+    def detect_refactor_events(self, commit_groups: list[dict]) -> list[dict]:
+        """
+        检测跨文件重构事件：传入最近 N 个 commit 的变更组信息，
+        LLM 判断哪些 commit 是跨文件重构，返回合并后的事件列表。
+
+        Args:
+            commit_groups: get_recent_commit_groups 的输出。
+
+        Returns:
+            list[dict]: 每项一个事件 {refactor_type, summary, commits: [...]}
+        """
+        if not commit_groups:
+            return []
+
+        # 简化每个 commit 数据（去掉详细文件列表，只保留路径名和 churn）
+        simplified = []
+        for cg in commit_groups:
+            files_short = [f"{f['path']}(+{f['additions']}/-{f['deletions']})" for f in cg.get("files", [])[:8]]
+            simplified.append({
+                "hash": cg["commit_hash"][:8],
+                "message": cg["message"],
+                "files": cg.get("files", []),
+                "file_count": cg["file_count"],
+                "total_churn": cg["total_churn"],
+                "file_paths": files_short,
+            })
+
+        import json as _json
+        batch = _json.dumps(simplified, ensure_ascii=False)
+
+        prompt = f"""分析以下最近 commit 数据，判断其中的跨文件重构事件。
+
+一条 commit 如果同时满足以下条件，很可能是一次重构：
+
+1. 修改了 3 个以上文件
+2. 文件的修改有关联（如同属一个模块/功能），并非无关文件的随机集合
+3. commit message 描述一个统一的行为（如"重构认证模块""迁移数据库层"）
+
+对于符合条件的事件，请合并为一条记录。相邻多个 commit 如果属于同一个持续重构过程，也应合并。
+
+输出 JSON 数组：
+[{{"refactor_type": "rename|split|extract|migrate|restructure|unknown",
+   "summary": "一句话中文重构描述",
+   "file_count": 涉及的文件数,
+   "files": ["file1.py", "file2.py"],
+   "commits": ["hash1短值", ...],
+   "confidence": "high|medium|low"
+}}]
+
+如果没有任何重构事件，输出 []。
+
+Commit 数据：
+{batch}
+"""
+        messages = [
+            {"role": "system", "content": "You are a code repository analyst. Detect cross-file refactoring events. Output only valid JSON arrays."},
+            {"role": "user", "content": prompt},
+        ]
+        result = self._call(messages)
+        try:
+            parsed = _json.loads(result) if result else []
+        except (_json.JSONDecodeError, TypeError):
+            parsed = []
+        return parsed if isinstance(parsed, list) else []
+
+    def analyze_coupling_trends(self, trends: list[dict]) -> list[dict]:
+        """
+        对双窗口 co-change 趋势数据做语义分析，输出每个文件的风险解读。
+
+        Args:
+            trends: get_co_change_trends 的输出。
+
+        Returns:
+            追加 warning 和 suggestion 后的列表。
+        """
+        if not trends:
+            return trends
+
+        batch_text = "\n\n".join(
+            f"[{i}] {t['file']}: 伙伴数 {t['old_partners']}→{t['recent_partners']} "
+            f"(增长 {t.get('coupling_growth', 0)}), "
+            f"跨模块共现 {t.get('boundary_crossings', 0)} 次, "
+            f"当前风险: {t.get('risk', 'medium')}"
+            for i, t in enumerate(trends[:20])
+        )
+
+        prompt = f"""分析以下每个文件的耦合趋势数据。
+
+coupling_growth > 0.3 且 recent_partners > 3 说明耦合面显著扩大。
+boundary_crossings 高说明频繁跨模块耦合，可能是架构侵蚀的信号。
+
+对每条数据输出 JSON 数组：
+[{{"index": 0, "warning": "一句话中文风险描述（30字内）", "suggestion": "一句话改进建议（30字内）"}}]
+
+数据:
+{batch_text}
+"""
+        import json as _json
+        messages = [
+            {"role": "system", "content": "You are a software architecture analyst. Output only valid JSON."},
+            {"role": "user", "content": prompt},
+        ]
+        result = self._call(messages)
+        try:
+            parsed = _json.loads(result) if result else []
+        except (_json.JSONDecodeError, TypeError):
+            parsed = []
+
+        by_idx = {p.get("index"): p for p in parsed if isinstance(p, dict)}
+        for i, t in enumerate(trends):
+            ann = by_idx.get(i, {})
+            t["warning"] = ann.get("warning", "")
+            t["suggestion"] = ann.get("suggestion", "")
+        return trends
+
+    def explain_change_reason(self, commit_contexts: list[dict]) -> list[dict]:
+        """
+        对文件最近 N 个 commit 的变更上下文做原因理解。
+        综合 message + diff，输出每个 commit 的"为什么改"。
+
+        Args:
+            commit_contexts: get_file_change_context 的输出。
+
+        Returns:
+            追加 reason, why, effort 后的列表。
+        """
+        if not commit_contexts:
+            return commit_contexts
+
+        batch_items = []
+        for ctx in commit_contexts:
+            safe_diff = ctx.get("diff_summary", "")
+            if len(safe_diff) > 800:
+                safe_diff = safe_diff[:800] + "\n...(truncated)"
+            diff_html = safe_diff.replace("{", "{{").replace("}", "}}")
+            batch_items.append(f"[{commit_contexts.index(ctx)}] {ctx['message']}\n变更:\n{diff_html}")
+
+        batch_text = "\n---\n".join(batch_items)
+
+        prompt = f"""分析以下某文件最近几次 commit 的变更信息，理解每次变更背后的原因。
+
+对每个 commit 输出 JSON 数组：
+[{{"index": 0, "reason": "变更的核心目的（一句话中文，20字内）", "why": "具体的业务或技术原因（一句话中文，40字内）", "effort": "small|medium|large"}}]
+
+- reason: 变更的核心目的，如"修复空指针""重构认证逻辑""添加分页参数"
+- why: 变更原因，如"用户反馈登录闪退""模块耦合过高需要解耦""API 响应太慢需要缓存"
+- effort: 根据 diff 行数评估工作量大小
+
+数据:
+{batch_text}
+"""
+        import json as _json
+        messages = [
+            {"role": "system", "content": "You are a code historian who understands why changes were made. Output only valid JSON arrays."},
+            {"role": "user", "content": prompt},
+        ]
+        result = self._call(messages)
+        try:
+            parsed = _json.loads(result) if result else []
+        except (_json.JSONDecodeError, TypeError):
+            parsed = []
+
+        by_idx = {p.get("index"): p for p in parsed if isinstance(p, dict)}
+        for i, c in enumerate(commit_contexts):
+            ann = by_idx.get(i, {})
+            c["reason"] = ann.get("reason", "")
+            c["why"] = ann.get("why", "")
+            c["effort"] = ann.get("effort", "medium")
+        return commit_contexts
