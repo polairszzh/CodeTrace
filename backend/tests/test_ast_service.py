@@ -1,4 +1,4 @@
-from services.ast_service import extract_functions, JS_LANGUAGE
+from services.ast_service import extract_functions, extract_classes, JS_LANGUAGE
 
 
 PY_CODE = """
@@ -72,3 +72,33 @@ def test_extract_js_function_body():
     funcs = extract_functions(JS_CODE, JS_LANGUAGE)
     greet = [f for f in funcs if f["name"] == "greet"][0]
     assert greet["body"].startswith("function greet")
+
+
+def test_extract_classes_python():
+    classes = extract_classes(PY_CODE)
+    names = [k["name"] for k in classes]
+    assert "Foo" in names
+    assert len(classes) == 1
+
+
+def test_extract_class_with_methods():
+    classes = extract_classes(PY_CODE)
+    foo = [k for k in classes if k["name"] == "Foo"][0]
+    method_names = [m["name"] for m in foo["methods"]]
+    assert "bar" in method_names
+    assert foo["start_line"] > 0
+    assert "class Foo" in foo["body"]
+
+
+def test_extract_classes_empty():
+    assert extract_classes("") == []
+
+
+def test_extract_classes_js():
+    classes = extract_classes(JS_CODE, JS_LANGUAGE)
+    names = [k["name"] for k in classes]
+    assert "MyClass" in names
+    my = [k for k in classes if k["name"] == "MyClass"][0]
+    method_names = [m["name"] for m in my["methods"]]
+    assert "method1" in method_names
+    assert "method2" in method_names

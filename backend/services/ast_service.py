@@ -9,6 +9,7 @@ PY_LANGUAGE = Language(tspython.language())
 JS_LANGUAGE = Language(tsjavascript.language())
 
 FUNC_TYPES = {"function_definition", "function_declaration", "arrow_function", "method_definition"}
+CLASS_TYPES = {"class_definition", "class_declaration"}
 
 def get_language_for_file(file_path: str):
     if file_path.endswith((".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs")):
@@ -50,6 +51,61 @@ def extract_functions(source_code: str, language=None) -> list[dict]:
 
     walk(tree.root_node)
     return functions
+
+
+def extract_classes(source_code: str, language=None) -> list[dict]:
+    """
+    提取源代码中的 class 定义及其方法列表。
+
+    Args:
+        source_code (str): 源代码字符串。
+        language: tree-sitter Language 对象。
+
+    Returns:
+        list[dict]: 每项含 name / start_line / end_line / body / methods
+    """
+    if language is None:
+        language = PY_LANGUAGE
+    parser = Parser(language)
+
+    tree = parser.parse(bytes(source_code, "utf8"))
+    classes = []
+
+    def walk_methods(node):
+        """在 class body 内收集方法定义"""
+        methods = []
+        if node.type in FUNC_TYPES:
+            name_node = node.child_by_field_name("name")
+            body_node = node.child_by_field_name("body")
+            if name_node and body_node:
+                methods.append({
+                    "name": source_code[name_node.start_byte:name_node.end_byte],
+                    "start_line": node.start_point[0] + 1,
+                    "end_line": node.end_point[0] + 1,
+                    "body": source_code[node.start_byte:node.end_byte],
+                })
+        for child in node.children:
+            methods.extend(walk_methods(child))
+        return methods
+
+    def walk(node):
+        if node.type in CLASS_TYPES:
+            name_node = node.child_by_field_name("name")
+            body_node = node.child_by_field_name("body")
+            if name_node and body_node:
+                methods = walk_methods(body_node)
+                classes.append({
+                    "name": source_code[name_node.start_byte:name_node.end_byte],
+                    "start_line": node.start_point[0] + 1,
+                    "end_line": node.end_point[0] + 1,
+                    "body": source_code[node.start_byte:node.end_byte],
+                    "methods": methods,
+                })
+        for child in node.children:
+            walk(child)
+
+    walk(tree.root_node)
+    return classes
 
 
 def search_function_across_files(
@@ -252,6 +308,156 @@ def trace_function_across_commits(repo_path: Path, file_path: str, function_name
                     "function": None,
                     "file": current_file,
                     "llm_note": note or "函数已消失",
+                })
+
+    return {
+        "history": history,
+        "migration_path": migration_path,
+    }
+
+
+def trace_class_across_commits(repo_path: Path, file_path: str, class_name: str) -> dict:
+    """
+    追踪一个 class 在文件变更历史中的演变，支持跨文件迁移。
+
+    遍历文件的所有 commit，在每个版本中用 AST 解析 class 定义。
+    追踪 methods 增减、class 重命名和跨文件迁移。
+
+    Returns:
+        dict 包含:
+        - history: list[dict] 按时间顺序的提交记录
+        - migration_path: list[dict] 迁移事件列表
+    """
+    commits = get_file_commits(repo_path, file_path)
+    history = []
+    migration_path = []
+    last_method_names = set()
+    last_known_body = None
+    llm = LLMService()
+
+    current_file = file_path
+    current_class = class_name
+    current_lang = get_language_for_file(current_file)
+
+    for c in commits:
+        try:
+            content = get_file_content_at_commit(repo_path, c["hash"], current_file)
+        except Exception:
+            continue
+
+        classes = extract_classes(content, current_lang)
+        matched = [k for k in classes if k["name"] == current_class]
+
+        if matched:
+            klass = matched[0]
+            current_methods = {m["name"] for m in klass["methods"]}
+            added = list(current_methods - last_method_names)
+            removed = list(last_method_names - current_methods)
+
+            history.append({
+                "commit_hash": c["hash"],
+                "author": c["author"],
+                "date": c["date"],
+                "message": c["message"],
+                "klass": klass,
+                "file": current_file,
+                "methods_added": added,
+                "methods_removed": removed,
+            })
+            last_known_body = klass["body"]
+            last_method_names = current_methods
+            continue
+
+        # class 在当前文件消失了 → LLM 改名匹配 + 跨文件搜索
+        found_in_migration = False
+
+        # 阶段1：同文件 LLM 改名匹配
+        if last_known_body and classes:
+            class_names_in_file = [k["name"] for k in classes]
+            result = llm.trace_function_change(current_class, last_known_body, class_names_in_file)
+            if result and result.get("action") in ("renamed", "split", "merged"):
+                name_found = result.get("new_name", "")
+                new_matched = [k for k in classes if k["name"] == name_found]
+                if new_matched:
+                    new_klass = new_matched[0]
+                    current_methods = {m["name"] for m in new_klass["methods"]}
+                    added = list(current_methods - last_method_names)
+                    removed = list(last_method_names - current_methods)
+                    history.append({
+                        "commit_hash": c["hash"],
+                        "author": c["author"],
+                        "date": c["date"],
+                        "message": c["message"],
+                        "klass": new_klass,
+                        "file": current_file,
+                        "methods_added": added,
+                        "methods_removed": removed,
+                        "llm_note": result.get("note", f"疑似 class 重命名为 {name_found}"),
+                    })
+                    last_known_body = new_klass["body"]
+                    last_method_names = current_methods
+                    current_class = name_found
+                    found_in_migration = True
+
+        # 阶段2：跨文件搜索
+        if not found_in_migration and last_known_body:
+            cross_results = search_function_across_files(
+                repo_path, c["hash"], current_class,
+                old_body=last_known_body,
+                exclude_file=current_file,
+            )
+            if cross_results:
+                target = cross_results[0]
+                target_file = target["file"]
+                target_name = target["name"]
+                note = target.get("llm_note", f"class 迁移至 {target_file}")
+                history.append({
+                    "commit_hash": c["hash"],
+                    "author": c["author"],
+                    "date": c["date"],
+                    "message": c["message"],
+                    "klass": {"name": target_name, "start_line": target["start_line"],
+                              "end_line": target["end_line"], "body": target.get("body", ""),
+                              "methods": []},
+                    "file": target_file,
+                    "methods_added": [],
+                    "methods_removed": [],
+                    "llm_note": note,
+                    "migration": True,
+                })
+                migration_path.append({
+                    "from_file": current_file,
+                    "to_file": target_file,
+                    "from_class": current_class,
+                    "to_class": target_name,
+                    "commit_hash": c["hash"],
+                    "note": note,
+                })
+                current_file = target_file
+                current_class = target_name
+                current_lang = get_language_for_file(current_file)
+                last_known_body = target.get("body", "")
+                last_method_names = set()
+                found_in_migration = True
+
+        if not found_in_migration:
+            if last_known_body:
+                note = ""
+                if classes:
+                    r = llm.trace_function_change(current_class, last_known_body,
+                                                  [k["name"] for k in classes])
+                    if r:
+                        note = r.get("note", "")
+                history.append({
+                    "commit_hash": c["hash"],
+                    "author": c["author"],
+                    "date": c["date"],
+                    "message": c["message"],
+                    "klass": None,
+                    "file": current_file,
+                    "methods_added": [],
+                    "methods_removed": [],
+                    "llm_note": note or "class 已消失",
                 })
 
     return {
