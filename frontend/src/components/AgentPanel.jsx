@@ -1,11 +1,13 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useEffect } from 'react'
+import CouplingGraph from './CouplingGraph'
+import ModuleErosion from './ModuleErosion'
 
 function AgentPanel() {
     const [repoUrl, setRepoUrl] = useState('')
     const [goal, setGoal] = useState('')
     const [running, setRunning] = useState(false)
-    const [steps, setSteps] = useState([])
     const [finalReport, setFinalReport] = useState(null)
+    const [couplingData, setCouplingData] = useState(null)
     const [error, setError] = useState('')
 
     // 从 URL 参数读取仓库地址（由扩展打开时自动填入）
@@ -19,8 +21,8 @@ function AgentPanel() {
 
     const handleAnalyze = async () => {
         setRunning(true)
-        setSteps([])
         setFinalReport(null)
+        setCouplingData(null)
         setError('')
 
         try {
@@ -36,24 +38,14 @@ function AgentPanel() {
             if (!res.ok) throw new Error(`请求失败: ${res.status}`)
             const data = await res.json()
 
-            if (data.error) {
-                setError(data.error)
-                return
+            if (data.report && data.report.error) {
+                setError(data.report.error)
             }
-
-            // 显示探索记录
-            if (data.findings && data.findings.length > 0) {
-                setSteps(data.findings.map((f, i) => ({
-                    step: i + 1,
-                    tool: f.tool,
-                    args: f.args,
-                    result: f.result,
-                })))
+            if (data.report && data.report.final_report) {
+                setFinalReport({ summary: data.report.final_report })
             }
-
-            // 显示最终报告
-            if (data.final_report) {
-                setFinalReport({ summary: data.final_report })
+            if (data.coupling) {
+                setCouplingData(data.coupling)
             }
         } catch (e) {
             setError(e.message)
@@ -63,74 +55,107 @@ function AgentPanel() {
     }
 
     return (
-        <div style={{ maxWidth: '900px', margin: '20px auto', padding: '0 20px' }}>
-            <div style={{ display: 'flex', gap: '10px', marginBottom: '10px' }}>
+        <div style={{ padding: '0 20px', marginTop: '20px' }}>
+            {/* 输入栏 */}
+            <div style={{ display: 'flex', gap: '10px', marginBottom: '20px' }}>
                 <input
                     placeholder="GitHub 仓库 URL"
                     value={repoUrl}
                     onChange={e => setRepoUrl(e.target.value)}
-                    style={{ flex: 1, padding: '8px' }}
+                    style={{ flex: 2, padding: '8px', borderRadius: '6px', border: '1px solid #cbd5e0' }}
                 />
                 <input
                     placeholder="分析目标（可留空）"
                     value={goal}
                     onChange={e => setGoal(e.target.value)}
-                    style={{ flex: 1, padding: '8px' }}
+                    style={{ flex: 1, padding: '8px', borderRadius: '6px', border: '1px solid #cbd5e0' }}
                 />
                 <button onClick={handleAnalyze} disabled={running}
-                    style={{ padding: '8px 16px', cursor: 'pointer' }}>
-                    {running ? 'Agent 分析中...' : '开始分析'}
+                    style={{
+                        padding: '8px 20px', borderRadius: '6px', cursor: running ? 'not-allowed' : 'pointer',
+                        background: running ? '#a0aec0' : '#3182ce', color: '#fff', border: 'none',
+                        fontWeight: '600', whiteSpace: 'nowrap',
+                    }}>
+                    {running ? '分析中...' : '开始分析'}
                 </button>
             </div>
 
-            {error && <div style={{ color: '#e53e3e', marginBottom: '10px' }}>{error}</div>}
-
-            {steps.length > 0 && (
-                <div style={{ marginTop: '20px' }}>
-                    <h3>Agent 探索过程</h3>
-                    {steps.map((s, i) => {
-                        if (s.status) {
-                            return (
-                                <div key={i} style={{
-                                    padding: '8px 12px', marginBottom: '6px', background: '#fffbeb',
-                                    borderRadius: '6px', fontSize: '13px', borderLeft: '3px solid #d69e2e'
-                                }}>
-                                    <span style={{ color: '#975a16' }}>{s.status}</span>
-                                </div>
-                            )
-                        }
-                        if (!s.tool) return null
-                        return (
-                        <div key={i} style={{
-                            padding: '8px 12px', marginBottom: '6px', background: '#f0f4f8',
-                            borderRadius: '6px', fontSize: '13px', borderLeft: '3px solid #3182ce'
-                        }}>
-                            <span style={{ fontWeight: 'bold', color: '#3182ce' }}>Step {s.step}: {s.tool}</span>
-                            <details style={{ marginTop: '4px', fontSize: '12px', color: '#555' }}>
-                                <summary>查看详情</summary>
-                                <pre style={{ background: '#fff', padding: '6px', borderRadius: '4px', overflow: 'auto', maxHeight: '200px' }}>
-                                    {JSON.stringify(s.args, null, 2)}
-                                </pre>
-                            </details>
-                        </div>
-                        )
-                    })}
+            {error && (
+                <div style={{ color: '#e53e3e', marginBottom: '12px', padding: '8px 12px',
+                    background: '#fff5f5', borderRadius: '6px', border: '1px solid #fed7d7', fontSize: '13px' }}>
+                    {error}
                 </div>
             )}
 
-            {finalReport && (
-                <div style={{ marginTop: '20px', background: '#f7fafc', padding: '20px', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
-                    <h3 style={{ marginTop: 0 }}>分析报告</h3>
-                    {finalReport.summary && (
+            {/* 左右分栏 */}
+            <div style={{ display: 'flex', gap: '20px', minHeight: '600px' }}>
+                {/* 左栏：报告 */}
+                <div style={{ flex: '1 1 45%', minWidth: 0 }}>
+                    {finalReport && (
                         <div style={{
-                            whiteSpace: 'pre-wrap', color: '#333', fontSize: '14px', lineHeight: '1.6',
-                            maxHeight: '600px', overflow: 'auto'
+                            background: '#f7fafc', padding: '20px', borderRadius: '8px',
+                            border: '1px solid #e2e8f0', height: '100%', overflow: 'auto',
                         }}>
-                            {finalReport.summary}
+                            <h3 style={{ margin: '0 0 12px 0', fontSize: '16px' }}>分析报告</h3>
+                            <div style={{
+                                whiteSpace: 'pre-wrap', color: '#333', fontSize: '14px',
+                                lineHeight: '1.7',
+                            }}>
+                                {finalReport.summary}
+                            </div>
+                        </div>
+                    )}
+                    {!finalReport && !running && !error && (
+                        <div style={{ color: '#a0aec0', textAlign: 'center', paddingTop: '120px', fontSize: '14px' }}>
+                            输入仓库 URL 开始分析
+                        </div>
+                    )}
+                    {running && !finalReport && (
+                        <div style={{ color: '#718096', textAlign: 'center', paddingTop: '120px', fontSize: '14px' }}>
+                            Agent 正在探索仓库...
                         </div>
                     )}
                 </div>
-            )}
+
+                {/* 右栏：耦合可视化 */}
+                <div style={{ flex: '1 1 55%', minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+                    {couplingData && couplingData.nodes && couplingData.nodes.length > 0 ? (
+                        <>
+                            <div style={{ height: '460px', marginBottom: '12px' }}>
+                                <h4 style={{ margin: '0 0 8px 0', fontSize: '14px' }}>
+                                    共变耦合图
+                                    <span style={{ fontWeight: 'normal', fontSize: '12px', color: '#718096', marginLeft: '10px' }}>
+                                        {couplingData.total_files} 个文件, {couplingData.edges.length} 条边
+                                        {couplingData.high_risk_count > 0 && `, ${couplingData.high_risk_count} 高风险`}
+                                    </span>
+                                </h4>
+                                <CouplingGraph
+                                    nodes={couplingData.nodes}
+                                    edges={couplingData.edges}
+                                />
+                            </div>
+                            <div style={{ flex: '0 0 auto' }}>
+                                <h4 style={{ margin: '0 0 8px 0', fontSize: '14px' }}>模块侵蚀风险</h4>
+                                <ModuleErosion nodes={couplingData.nodes} />
+                            </div>
+                        </>
+                    ) : couplingData && (
+                        <div style={{ padding: '20px', color: '#718096', textAlign: 'center', fontSize: '14px' }}>
+                            {couplingData.note || '暂无耦合数据'}
+                        </div>
+                    )}
+                    {!couplingData && running && (
+                        <div style={{ padding: '20px', color: '#718096', textAlign: 'center', fontSize: '14px' }}>
+                            耦合分析准备中...
+                        </div>
+                    )}
+                    {!couplingData && !running && !error && (
+                        <div style={{ color: '#a0aec0', textAlign: 'center', paddingTop: '120px', fontSize: '14px' }}>
+                            分析完成后将显示耦合关系图
+                        </div>
+                    )}
+                </div>
+            </div>
         </div>
     )
 }
