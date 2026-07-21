@@ -123,24 +123,29 @@ def build_agent(registry: ToolRegistry, llm: LLMService | None = None):
         if state.get("final_report"):
             return {"final_report": state["final_report"]}
 
-        # 步数耗尽但 LLM 没给总结 → 用 findings 构造
-        parts = []
+        # 步数耗尽但 LLM 没给总结 → 用 LLM 把 findings 合成可读报告
+        findings_short = []
         for f in state["findings"]:
-            tool_name = f["tool"]
-            result = f["result"]
-            if isinstance(result, dict):
-                summary = {k: v for k, v in result.items() if k not in ("history",)}
-                parts.append(f"- {tool_name}: {json.dumps(summary, ensure_ascii=False)[:400]}")
-            elif isinstance(result, list):
-                items = [str(x)[:80] for x in result[:6]]
-                parts.append(f"- {tool_name}: {', '.join(items)}")
+            name = f["tool"]
+            if isinstance(f["result"], dict):
+                # 提取关键信息，去掉大段无用字段
+                r = {k: v for k, v in f["result"].items() if k not in ("history", "files", "commit_messages")}
+                findings_short.append(f"- {name}: {json.dumps(r, ensure_ascii=False)[:300]}")
+            elif isinstance(f["result"], list):
+                items = [str(x)[:60] for x in f["result"][:4]]
+                findings_short.append(f"- {name}: [{', '.join(items)}]")
+            else:
+                findings_short.append(f"- {name}: {str(f['result'])[:200]}")
 
-        report = f"## 分析报告\n\n目标：{state['goal']}\n\n"
-        report += f"完成 {state['step_count']} 步探索，调用 {len(state['findings'])} 次工具。\n\n"
-        if parts:
-            report += "### 探索记录\n\n" + "\n".join(parts)
-        else:
-            report += "未收集到足够信息。"
+        findings_text = "\n".join(findings_short)
+        try:
+            resp = llm._call([
+                {"role": "system", "content": "你是代码仓库分析报告撰写人。根据以下原始分析数据，写一份简洁、有结构的报告。分成：项目概况（重点）、热点与风险（重点）、关键发现（列出）、建议（列出）。不要列举原始工具名和JSON。每条结论用一句话。总字数不超过600字。"},
+                {"role": "user", "content": f"目标：{state['goal']}\n\n分析数据：\n{findings_text[:3000]}"},
+            ], temperature=0.3)
+            report = resp if resp else "（LLM 未能生成报告。）"
+        except Exception:
+            report = "（报告生成异常。）"
 
         return {"final_report": report}
 

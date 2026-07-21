@@ -1,4 +1,5 @@
 import os
+import asyncio
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from models.schemas import TraceRequest, TraceResponse, TimelineNode, DiffStats
@@ -9,6 +10,7 @@ from services.ast_service import trace_function_across_commits
 from services.agent import registry
 from services.agent.planner import AgentPlanner
 from services.agent.graph import run_agent
+from services.coupling_runner import run_coupling_analysis
 
 router = APIRouter()
 
@@ -155,13 +157,48 @@ async def graph_analyze(req: TraceRequest, goal: str = ""):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"仓库操作失败：{str(e)}")
 
-    result = run_agent(registry, goal, repo_url=req.repo_url, max_steps=15)
+    # 并行：主 Agent 报告 + 耦合分析
+    report_task = asyncio.to_thread(
+        run_agent, registry, goal, repo_url=req.repo_url, max_steps=15
+    )
+    coupling_task = run_coupling_analysis(req.repo_url)
 
-    return {
-        "goal": goal,
-        "repo_url": req.repo_url,
-        "step_count": result["step_count"],
-        "findings_count": len(result["findings"]),
-        "final_report": result.get("final_report"),
-        "error": result.get("error"),
-    }
+    report_raw, coupling_raw = await asyncio.gather(
+        report_task, coupling_task, return_exceptions=True
+    )
+
+    # 组装 report 部分
+    if isinstance(report_raw, Exception):
+        report = {
+            "goal": goal,
+            "repo_url": req.repo_url,
+            "step_count": 0,
+            "findings_count": 0,
+            "findings": [],
+            "final_report": None,
+            "error": str(report_raw),
+        }
+    else:
+        report = {
+            "goal": goal,
+            "repo_url": req.repo_url,
+            "step_count": report_raw["step_count"],
+            "findings_count": len(report_raw.get("findings", [])),
+            "findings": report_raw.get("findings", []),
+            "final_report": report_raw.get("final_report"),
+            "error": report_raw.get("error"),
+        }
+
+    # 组装 coupling 部分
+    if isinstance(coupling_raw, Exception):
+        coupling = {
+            "nodes": [],
+            "edges": [],
+            "total_files": 0,
+            "high_risk_count": 0,
+            "note": str(coupling_raw),
+        }
+    else:
+        coupling = coupling_raw
+
+    return {"report": report, "coupling": coupling}

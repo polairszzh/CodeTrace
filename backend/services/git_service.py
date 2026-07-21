@@ -504,6 +504,112 @@ def get_co_change_trends(repo_path: Path, window_days: int = 30) -> list[dict]:
     return results[:30]
 
 
+def get_co_change_edges(repo_path: Path, window_days: int = 30) -> dict:
+    """
+    双窗口 co-change 边数据，用于前端力导向图渲染。
+
+    Args:
+        repo_path: 仓库本地路径。
+        window_days: 单个窗口天数，默认 30。
+
+    Returns:
+        dict: {nodes: [...], edges: [...]}
+            nodes 每项含 id/label/module/recent_partners/old_partners/coupling_growth/boundary_crossings/risk
+            edges 每项含 source/target/weight（weight = 共变次数）
+    """
+    from collections import defaultdict, Counter
+    import datetime
+
+    now = datetime.datetime.now()
+
+    def window_commits(since_days: int, until_days: int) -> list[set[str]]:
+        since = (now - datetime.timedelta(days=since_days)).strftime("%Y-%m-%d")
+        until = (now - datetime.timedelta(days=until_days)).strftime("%Y-%m-%d")
+        result = subprocess.run(
+            ["git", "log", "--name-only", "--pretty=format:", "--since", since, "--until", until],
+            cwd=repo_path, capture_output=True, text=True, encoding="utf-8", timeout=60,
+        )
+        groups = []
+        current_set = set()
+        for line in result.stdout.strip().split("\n"):
+            line = line.strip()
+            if not line:
+                if current_set:
+                    groups.append(current_set)
+                    current_set = set()
+                continue
+            current_set.add(line)
+        if current_set:
+            groups.append(current_set)
+        return groups
+
+    recent_groups = window_commits(window_days, 0)
+    old_groups = window_commits(window_days * 2, window_days)
+
+    # ── 统计 edges、partner 数、跨模块共现 ──
+    edge_counter = Counter()          # {(fa, fb): weight}
+    recent_map = defaultdict(set)     # {file: {partners}}
+    bx_counter = Counter()            # {file: 跨模块共现次数}
+
+    for files in recent_groups:
+        flist = list(files)
+        for i, fa in enumerate(flist):
+            for fb in flist[i + 1:]:
+                key = tuple(sorted([fa, fb]))
+                edge_counter[key] += 1
+                recent_map[fa].add(fb)
+                recent_map[fb].add(fa)
+                ma = fa.replace("\\", "/").split("/")[0] if "/" in fa or "\\" in fa else ""
+                mb = fb.replace("\\", "/").split("/")[0] if "/" in fb or "\\" in fb else ""
+                if ma and mb and ma != mb:
+                    bx_counter[fa] += 1
+                    bx_counter[fb] += 1
+
+    # ── 旧窗口 partner 数 ──
+    old_map = defaultdict(set)
+    for files in old_groups:
+        flist = list(files)
+        for i, fa in enumerate(flist):
+            for fb in flist[i + 1:]:
+                old_map[fa].add(fb)
+                old_map[fb].add(fa)
+
+    # ── 构建 nodes ──
+    all_files = set(recent_map.keys()) | set(old_map.keys())
+    nodes = []
+    for f in all_files:
+        rec_p = len(recent_map.get(f, set()))
+        old_p = len(old_map.get(f, set()))
+        if rec_p == 0 and old_p == 0:
+            continue
+        denom = old_p or 1
+        growth = round((rec_p - old_p) / denom, 2)
+        module = f.replace("\\", "/").split("/")[0] if "/" in f or "\\" in f else ""
+        nodes.append({
+            "id": f,
+            "label": f.split("/")[-1].split("\\")[-1],
+            "module": module,
+            "recent_partners": rec_p,
+            "old_partners": old_p,
+            "coupling_growth": growth,
+            "boundary_crossings": bx_counter.get(f, 0),
+            "risk": "high" if growth > 0.5 else ("medium" if growth > 0.2 else "low"),
+        })
+
+    # 按 coupling_growth 降序，取 top 30
+    nodes.sort(key=lambda x: (-x["coupling_growth"], -x["boundary_crossings"]))
+    top_nodes = nodes[:30]
+    top_ids = {n["id"] for n in top_nodes}
+
+    # ── 构建 edges（只包含 top 节点之间的边） ──
+    edges = []
+    for (fa, fb), weight in edge_counter.most_common(200):
+        if fa in top_ids and fb in top_ids:
+            edges.append({"source": fa, "target": fb, "weight": weight})
+
+    return {"nodes": top_nodes, "edges": edges}
+
+
 def get_file_change_context(repo_path: Path, file_path: str, count: int = 10) -> list[dict]:
     """
     获取某文件最近 N 个 commit 的变更上下文：message + diff 摘要。
