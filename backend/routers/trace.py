@@ -6,7 +6,7 @@ from models.schemas import TraceRequest, TraceResponse, TimelineNode, DiffStats
 from services.git_service import clone_or_pull_repo, get_file_commits, get_commit_diff_stats
 from services.github_service import GitHubClient
 from services.llm_service import LLMService
-from services.ast_service import trace_function_across_commits
+from services.ast_service import trace_function_across_commits, trace_class_across_commits
 from services.agent import registry
 from services.agent.planner import AgentPlanner
 from services.agent.graph import run_agent
@@ -117,6 +117,43 @@ async def trace_function(req: TraceRequest, function_name: str = ""):
         "repo": repo_full,
         "file_path": req.file_path,
         "function_name": function_name,
+        "history": history,
+        "migration_path": migration_path,
+        "commit_count": len(history),
+        "note": note,
+    }
+
+@router.post("/trace/class")
+async def trace_class(req: TraceRequest, class_name: str = ""):
+    if not class_name:
+        raise HTTPException(status_code=400, detail="请提供 class 名")
+
+    try:
+        parts = req.repo_url.rstrip("/").split("/")
+        repo_owner, repo_name = parts[-2], parts[-1].replace(".git", "")
+        repo_full = f"{repo_owner}/{repo_name}"
+    except Exception:
+        raise HTTPException(status_code=400, detail="仓库地址格式有误")
+
+    try:
+        repo_path = clone_or_pull_repo(req.repo_url)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"仓库操作失败：{str(e)}")
+
+    result = trace_class_across_commits(repo_path, req.file_path, class_name)
+    history = result["history"]
+    migration_path = result.get("migration_path", [])
+
+    note = None
+    if not history:
+        note = "未在文件历史中找到该 class，请检查 class 名是否正确"
+    elif migration_path:
+        note = f"该 class 发生了 {len(migration_path)} 次跨文件迁移"
+
+    return {
+        "repo": repo_full,
+        "file_path": req.file_path,
+        "class_name": class_name,
         "history": history,
         "migration_path": migration_path,
         "commit_count": len(history),
