@@ -381,7 +381,8 @@ def get_recent_commit_groups(repo_path: Path, count: int = 15) -> list[dict]:
                 current["files"] = current_files
                 current["file_count"] = len(current_files)
                 current["total_churn"] = sum(f.get("additions", 0) + f.get("deletions", 0) for f in current_files)
-                groups.append(current)
+                if current["file_count"] > 0:
+                    groups.append(current)
 
             parts = line[9:].split("|", 3)
             current = {
@@ -409,7 +410,8 @@ def get_recent_commit_groups(repo_path: Path, count: int = 15) -> list[dict]:
         current["files"] = current_files
         current["file_count"] = len(current_files)
         current["total_churn"] = sum(f.get("additions", 0) + f.get("deletions", 0) for f in current_files)
-        groups.append(current)
+        if current["file_count"] > 0:
+            groups.append(current)
 
     return groups
 

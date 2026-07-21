@@ -1,96 +1,110 @@
-import { useState } from "react"
+import { useState } from 'react'
+import DetailPanel from './DetailPanel'
+
+const TYPE_COLORS = { feature: '#3182ce', bugfix: '#e53e3e', refactor: '#805ad5', chore: '#718096', docs: '#58a6ff', test: '#79c0ff' }
 
 function Timeline({ data }) {
-    const [expanded, setExpanded] = useState(null)
+  const [selectedHash, setSelectedHash] = useState(null)
 
-    const toggle = (hash) => {
-        setExpanded(expanded === hash ? null : hash)
-    }
+  if (!data) return null
 
-    if (!data) return null
+  const isFunctionMode = 'function_name' in data || 'class_name' in data
+  const nodes = data.history || data.timeline || []
+  const selected = nodes.find(n => n.commit_hash === selectedHash)
 
-    const isFunctionMode = "function_name" in data
-    const nodes = isFunctionMode ? data.history : data.timeline
-
+  if (nodes.length === 0) {
     return (
-        <div style={{ maxWidth: '700px', margin: '20px auto' }}>
-            <p style={{ color: '#666', marginBottom: '10px' }}>
-                {data.repo} · {data.file_path}
-                {isFunctionMode && <> · 函数 <strong>{data.function_name}</strong></>}
-                · {data.commit_count} 次提交
-            </p>
-            {data.note && nodes.length === 0 && (
-                <div style={{ padding: '20px', color: '#d69e2e', textAlign: 'center' }}>{data.note}</div>
-            )}
-            {nodes.map((node) => {
-                const func = node.function
-                const changeType = node.change_type
-                const llmNote = node.llm_note
-
-                return (
-                    <div key={node.commit_hash} style={{ marginLeft: '20px', borderLeft: '2px solid #ddd', paddingLeft: '20px', marginBottom: '16px' }}>
-                        <div onClick={() => toggle(node.commit_hash)} style={{ cursor: 'pointer' }}>
-                            <span style={{ fontWeight: 'bold' }}>{node.commit_hash.slice(0, 7)}</span>
-                            {' '}
-                            <span>{node.author}</span>
-                            {' '}
-                            <span style={{ color: '#999', fontSize: '14px' }}>{node.date?.slice(0, 10)}</span>
-                            {changeType && (
-                                <>
-                                    {' '}
-                                    <span style={{
-                                        display: 'inline-block',
-                                        padding: '2px 6px',
-                                        borderRadius: '4px',
-                                        fontSize: '12px',
-                                        color: '#fff',
-                                        backgroundColor: changeType === 'feature' ? '#3182ce'
-                                            : changeType === 'bugfix' ? '#e53e3e'
-                                                : changeType === 'refactor' ? '#805ad5'
-                                                    : '#718096',
-                                    }}>
-                                        {changeType}
-                                    </span>
-                                </>
-                            )}
-                            {func && (
-                                <span style={{ marginLeft: '8px', fontFamily: 'monospace', fontSize: '13px', color: '#555' }}>
-                                    {func.name} (L{func.start_line})
-                                </span>
-                            )}
-                            {llmNote && (
-                                <span style={{ marginLeft: '8px', fontSize: '12px', color: '#d69e2e' }}>
-                                    ⚡ {llmNote}
-                                </span>
-                            )}
-                        </div>
-                        <div style={{ marginTop: '4px', color: '#444' }}>
-                            {func ? func.name + ' 变更' : node.summary}
-                        </div>
-                        {expanded === node.commit_hash && (
-                            <div style={{ marginTop: '8px', padding: '10px', background: '#f5f5f5', borderRadius: '6px', fontSize: '14px' }}>
-                                <div><strong>commit:</strong> {node.commit_hash}</div>
-                                <div><strong>message:</strong> {node.message}</div>
-                                {func && <div><strong>函数:</strong> {func.name}（第 {func.start_line}-{func.end_line} 行）</div>}
-                                {node.pr_title && <div><strong>PR:</strong> {node.pr_title}</div>}
-                                {node.diff_stats && (
-                                    <div><strong>改动:</strong> +{node.diff_stats.additions}/-{node.diff_stats.deletions} · {node.diff_stats.files_changed} 个文件</div>
-                                )}
-                                {func && (
-                                    <details style={{ marginTop: '8px' }}>
-                                        <summary style={{ cursor: 'pointer', color: '#666' }}>查看函数代码</summary>
-                                        <pre style={{ background: '#eee', padding: '8px', borderRadius: '4px', fontSize: '12px', overflow: 'auto' }}>
-                                            {func.body}
-                                        </pre>
-                                    </details>
-                                )}
-                            </div>
-                        )}
-                    </div>
-                )
-            })}
-        </div>
+      <div className="flex-1 flex items-center justify-center text-sm p-8"
+        style={{ color: 'var(--color-text-muted)' }}>
+        {data.note || '无数据'}
+      </div>
     )
+  }
+
+  return (
+    <div className="flex-1 flex flex-col min-h-0">
+      {/* 文件概览条 */}
+      <div className="flex items-center gap-3 px-5 py-2 text-xs"
+        style={{ borderBottom: '1px solid var(--color-border)', color: 'var(--color-text-muted)' }}>
+        <span className="font-mono" style={{ color: 'var(--color-text)' }}>{data.file_path}</span>
+        <span>·</span>
+        <span>{data.commit_count || nodes.length} 次提交</span>
+        {isFunctionMode && (
+          <>
+            <span>·</span>
+            <span className="font-mono" style={{ color: 'var(--color-accent)' }}>
+              {data.function_name || data.class_name}
+            </span>
+          </>
+        )}
+        {data.note && data.migration_path?.length > 0 && (
+          <>
+            <span>·</span>
+            <span style={{ color: '#805ad5' }}>⚠ {data.note}</span>
+          </>
+        )}
+      </div>
+
+      {/* 主区域：timeline + 详情 */}
+      <div className="flex-1 flex min-h-0">
+        {/* timeline 列表 */}
+        <div className="overflow-y-auto" style={{ width: '340px', minWidth: '340px', borderRight: '1px solid var(--color-border)' }}>
+          {nodes.map((n, i) => {
+            const func = n.function || n.klass
+            const ct = n.change_type
+            const isSelected = n.commit_hash === selectedHash
+            return (
+              <div
+                key={n.commit_hash}
+                onClick={() => setSelectedHash(n.commit_hash)}
+                className="px-4 py-2.5 cursor-pointer transition-colors"
+                style={{
+                  background: isSelected ? 'var(--color-surface-alt)' : 'transparent',
+                  borderBottom: '1px solid var(--color-border)',
+                  borderLeft: isSelected ? '2px solid var(--color-accent)' : '2px solid transparent',
+                }}
+                onMouseEnter={e => { if (!isSelected) e.currentTarget.style.background = 'var(--color-surface-alt)' }}
+                onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = 'transparent' }}
+              >
+                <div className="flex items-center gap-2 mb-0.5">
+                  <span className="text-base" style={{ color: isSelected ? 'var(--color-accent)' : 'var(--color-text-muted)' }}>
+                    {isSelected ? '●' : '○'}
+                  </span>
+                  <code className="text-xs font-mono" style={{ color: 'var(--color-accent)', fontSize: '11px' }}>
+                    {n.commit_hash?.slice(0, 7)}
+                  </code>
+                  {ct && (
+                    <span className="px-1.5 py-0.5 rounded-full text-xs font-medium"
+                      style={{ background: (TYPE_COLORS[ct] || '#718096') + '22', color: TYPE_COLORS[ct] || '#718096', fontSize: '10px' }}>
+                      {ct}
+                    </span>
+                  )}
+                  {n.migration && <span className="text-xs" style={{ color: '#805ad5' }}>↗</span>}
+                </div>
+                <div className="text-xs ml-5 leading-snug truncate" style={{ color: 'var(--color-text)' }}>
+                  {func ? `${func.name} 变更` : (n.summary || n.message?.split('\n')[0] || '')}
+                </div>
+                <div className="ml-5 mt-0.5 text-xs" style={{ color: 'var(--color-text-muted)' }}>
+                  {n.author} · {n.date?.slice(0, 10)}
+                  {n.migration_path && n.migration_path.length > 0 && ` · 迁移`}
+                </div>
+                {func && func.name && (
+                  <div className="ml-5 text-xs font-mono" style={{ color: 'var(--color-accent-light)' }}>
+                    {func.name}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+
+        {/* 详情面板 */}
+        <div className="flex-1 overflow-y-auto bg-[var(--color-surface)]">
+          <DetailPanel node={selected || nodes[0]} isFunctionMode={isFunctionMode} />
+        </div>
+      </div>
+    </div>
+  )
 }
 
 export default Timeline
