@@ -3,10 +3,10 @@ import asyncio
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from models.schemas import TraceRequest, TraceResponse, TimelineNode, DiffStats
-from services.git_service import clone_or_pull_repo, get_file_commits, get_commit_diff_stats
+from services.git_service import clone_or_pull_repo, get_file_commits, get_commit_diff_stats, list_files_at_commit, get_file_content_at_commit
 from services.github_service import GitHubClient
 from services.llm_service import LLMService
-from services.ast_service import trace_function_across_commits, trace_class_across_commits
+from services.ast_service import trace_function_across_commits, trace_class_across_commits, extract_functions, extract_classes, get_language_for_file
 from services.agent import registry
 from services.agent.planner import AgentPlanner
 from services.agent.graph import run_agent
@@ -239,3 +239,72 @@ async def graph_analyze(req: TraceRequest, goal: str = ""):
         coupling = coupling_raw
 
     return {"report": report, "coupling": coupling}
+
+
+@router.get("/repo/files")
+async def repo_files(repo_url: str, path: str = ""):
+    """返回仓库目录结构。无 path 时返回顶层，有 path 时返回该路径下的子节点。"""
+    try:
+        repo_path = clone_or_pull_repo(repo_url)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"仓库操作失败：{str(e)}")
+
+    try:
+        files = list_files_at_commit(repo_path, "HEAD")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"文件列表获取失败：{str(e)}")
+
+    # 过滤路径前缀
+    prefix = path.strip("/")
+    if prefix:
+        files = [f for f in files if f.startswith(prefix + "/") or f == prefix]
+
+    # 构建树
+    seen = set()
+    entries = []
+    for f in files:
+        if prefix:
+            rel = f[len(prefix) + 1:] if f.startswith(prefix + "/") else f
+        else:
+            rel = f
+        parts = rel.split("/")
+        top = parts[0]
+        if top not in seen:
+            seen.add(top)
+            entries.append({
+                "name": top,
+                "path": (prefix + "/" + top) if prefix else top,
+                "type": "dir" if len(parts) > 1 else "file",
+            })
+
+    entries.sort(key=lambda x: (x["type"] != "dir", x["name"]))
+    return {"entries": entries}
+
+
+@router.get("/repo/symbols")
+async def repo_symbols(repo_url: str, file_path: str):
+    """返回指定文件当前 HEAD 的所有函数名和 class 名。"""
+    try:
+        repo_path = clone_or_pull_repo(repo_url)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"仓库操作失败：{str(e)}")
+
+    try:
+        content = get_file_content_at_commit(repo_path, "HEAD", file_path)
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"文件获取失败：{str(e)}")
+
+    lang = get_language_for_file(file_path)
+
+    functions = []
+    classes = []
+    try:
+        functions = extract_functions(content, lang)
+        classes = extract_classes(content, lang)
+    except Exception:
+        pass
+
+    return {
+        "functions": [{"name": f["name"], "start_line": f["start_line"]} for f in functions],
+        "classes": [{"name": c["name"], "start_line": c["start_line"], "methods": [m["name"] for m in c.get("methods", [])]} for c in classes],
+    }
