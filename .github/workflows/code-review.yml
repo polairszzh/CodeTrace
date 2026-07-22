@@ -1,0 +1,94 @@
+name: AI Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get PR diff
+        run: |
+          git diff origin/${{ github.base_ref }}...HEAD -- . \
+            ':(exclude).github/workflows/*' > /tmp/pr.diff
+
+      - name: Call LLM & post comment
+        uses: actions/github-script@v7
+        env:
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_BASE_URL: ${{ secrets.LLM_BASE_URL || 'https://api.deepseek.com/v1' }}
+          LLM_MODEL: ${{ secrets.LLM_MODEL || 'deepseek-chat' }}
+        with:
+          script: |
+            const fs = require("fs");
+            const diff = fs.readFileSync("/tmp/pr.diff", "utf-8").slice(0, 12000);
+            if (!diff.trim()) {
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: "## 🤖 AI 代码审查\n\n无代码变更，跳过审查。",
+              });
+              return;
+            }
+
+            const payload = {
+              model: process.env.LLM_MODEL,
+              messages: [
+                {
+                  role: "system",
+                  content: `你是严谨的代码审查助手。审查以下 PR diff，用中文回复。
+
+    格式：
+    ## 总评
+    —句话总体评价。
+
+    ## 问题
+    - 严重: · 行号 · 问题描述
+    - 建议: · 行号 · 改进方向
+
+    ## 值得注意的改动
+    - 好的设计或值得关注的变化
+
+    若无问题，直接回复 LGTM。最多 500 字。`,
+                },
+                { role: "user", content: `PR diff 如下：\n${diff}` },
+              ],
+              temperature: 0.1,
+            };
+
+            let review = "";
+            try {
+              const resp = await fetch(
+                `${process.env.LLM_BASE_URL}/chat/completions`,
+                {
+                  method: "POST",
+                  headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${process.env.LLM_API_KEY}`,
+                  },
+                  body: JSON.stringify(payload),
+                }
+              );
+              const data = await resp.json();
+              review = data?.choices?.[0]?.message?.content || "（LLM 返回为空）";
+            } catch (e) {
+              review = `LLM 调用失败: ${e.message}。请检查 GitHub Secrets 中的 LLM_API_KEY 配置。`;
+            }
+
+            const body = `## 🤖 AI 代码审查\n\n${review}\n\n---\n_模型: ${process.env.LLM_MODEL} · 由 GitHub Actions 自动触发_`;
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body,
+            });
