@@ -36,6 +36,7 @@ function AgentPanel() {
 
       if (data.report?.error) setError(data.report.error)
       if (data.report?.final_report) setFinalReport({ summary: data.report.final_report })
+      if (data.report?.error) setError(msg => msg || data.report.error)
       if (data.coupling) setCouplingData(data.coupling)
     } catch (e) {
       setError(e.message)
@@ -102,6 +103,11 @@ function AgentPanel() {
             <div className="flex-1 flex items-center justify-center text-sm rounded-xl"
               style={{ background: 'var(--color-surface-card)', border: '1px solid var(--color-border)', color: 'var(--color-text-muted)' }}>
               输入仓库 URL 开始分析
+            </div>
+          ) : !running && !finalReport ? (
+            <div className="flex-1 flex items-center justify-center text-sm rounded-xl p-6"
+              style={{ background: 'var(--color-surface-card)', border: '1px solid var(--color-border)', color: 'var(--color-text-muted)' }}>
+              Agent 未生成分析报告。可能是 LLM 调用超时或返回格式异常，可尝试使用其他模型或将 timeout 设大。
             </div>
           ) : running ? (
             <div className="flex-1 flex items-center justify-center text-sm rounded-xl"

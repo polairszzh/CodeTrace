@@ -1,5 +1,8 @@
 import httpx
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class LLMService:
@@ -45,11 +48,12 @@ class LLMService:
                 f"{self.base_url}/chat/completions",
                 headers=headers,
                 json=payload,
-                timeout=30,
+                timeout=60,
             )
             resp.raise_for_status()
             return resp.json()["choices"][0]["message"]["content"]
-        except Exception:
+        except Exception as e:
+            logger.warning("LLM _call 失败: %s | model=%s", e, self.model)
             return ""
         
     def _call_with_tools(self, messages: list[dict], tools: list[dict], temperature: float = 0.2) -> dict:
@@ -69,11 +73,12 @@ class LLMService:
                 f"{self.base_url}/chat/completions",
                 headers=headers,
                 json=payload,
-                timeout=30,
+                timeout=60,
             )
             resp.raise_for_status()
             return resp.json()["choices"][0]["message"]
-        except Exception:
+        except Exception as e:
+            logger.warning("LLM _call_with_tools 失败: %s | model=%s", e, self.model)
             return {"content": None, "tool_calls": None}
 
     def classify_and_summarize(

@@ -1,13 +1,89 @@
 import os
 import subprocess
+import time
 from pathlib import Path
 
 CACHE_DIR = Path(os.getenv("CODETRACE_CACHE", "/tmp/codetrace"))
 
+# 内存缓存：repo_url → repo_path
+_cache = {}
+
+# ── 并发锁 ──────────────────────────────────────────
+# 用 mkdir 原子性做锁（跨平台，不需要第三方库）
+_LOCK_DIR = CACHE_DIR / ".locks"
+
+
+def _acquire_lock(name: str, timeout: float = 30) -> bool:
+    """获取 repo 级别锁。返回是否成功。"""
+    os.makedirs(_LOCK_DIR, exist_ok=True)
+    lock_path = _LOCK_DIR / name.replace("/", "_").replace(":", "_")
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            os.mkdir(lock_path)
+            return True
+        except FileExistsError:
+            time.sleep(0.2)
+    return False
+
+
+def _release_lock(name: str):
+    lock_path = _LOCK_DIR / name.replace("/", "_").replace(":", "_")
+    try:
+        os.rmdir(lock_path)
+    except OSError:
+        pass
+
+
+# ── 缓存清理 ────────────────────────────────────────
+_LAST_CLEANUP = 0
+
+
+def _maybe_cleanup():
+    """每 10 分钟检查一次，删除 7 天未访问的缓存 repo。"""
+    global _LAST_CLEANUP
+    now = time.time()
+    if now - _LAST_CLEANUP < 600:
+        return
+    _LAST_CLEANUP = now
+
+    if not CACHE_DIR.exists():
+        return
+
+    for entry in os.scandir(CACHE_DIR):
+        if not entry.is_dir() or entry.name.startswith("."):
+            continue
+        try:
+            # 检查 .git/HEAD 的最后修改时间
+            git_head = Path(entry.path) / ".git" / "HEAD"
+            if not git_head.exists():
+                continue
+            atime = git_head.stat().st_atime
+            if now - atime > 7 * 86400:
+                import shutil
+                shutil.rmtree(entry.path, ignore_errors=True)
+        except Exception:
+            pass
+
+
+def _remote_head(repo_url: str) -> str | None:
+    """获取远程仓库 HEAD 的 commit hash。返回 None 表示远程不可达。"""
+    try:
+        result = subprocess.run(
+            ["git", "ls-remote", repo_url, "HEAD"],
+            capture_output=True, text=True, timeout=15,
+        )
+        return result.stdout.split()[0] if result.stdout.strip() else None
+    except Exception:
+        return None
+
 
 def clone_or_pull_repo(repo_url: str) -> Path:
     """
-    Clone the repository if it doesn't exist, or pull the latest changes if it does.
+    Clone the repository if it doesn't exist, or pull if the remote has changed.
+
+    Uses `git ls-remote HEAD` to check if the remote has advanced
+    before pulling, avoiding unnecessary git pull calls.
 
     Args:
         repo_url (str): The URL of the Git repository.
@@ -15,16 +91,55 @@ def clone_or_pull_repo(repo_url: str) -> Path:
     Returns:
         Path: The path to the cloned or updated repository.
     """
-    # Extract the repository name from the URL
-    # Example: https://github.com/polairszzh/CodeTrace.git -> CodeTrace
     repo_name = repo_url.rstrip("/").split("/")[-1].replace(".git", "")
     repo_path = CACHE_DIR / repo_name
 
-    # if the repository doesn't exist, clone it
+    # 定期清理过期缓存
+    _maybe_cleanup()
+
+    # ── 不存在 → clone ──
     if not repo_path.exists():
-        subprocess.run(["git", "clone", "--depth=50", repo_url, str(repo_path)], check=True, timeout=120)
-    else:
-        subprocess.run(["git", "pull"], cwd=repo_path, check=True, timeout=30)
+        locked = _acquire_lock(repo_name)
+        try:
+            subprocess.run(
+                ["git", "clone", "--depth=500", repo_url, str(repo_path)],
+                check=True, timeout=120,
+            )
+        finally:
+            if locked:
+                _release_lock(repo_name)
+        _cache[repo_url] = repo_path
+        return repo_path
+
+    # ── 已存在 → 检查远程是否有新 commit ──
+    remote_hash = _remote_head(repo_url)
+    if remote_hash is None:
+        return repo_path
+
+    try:
+        local_result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_path, capture_output=True, text=True, timeout=10,
+        )
+        local_hash = local_result.stdout.strip()
+    except Exception:
+        local_hash = ""
+
+    if local_hash == remote_hash:
+        return repo_path
+
+    # 不一致 → pull（加锁防并发）
+    locked = _acquire_lock(repo_name)
+    try:
+        subprocess.run(
+            ["git", "pull", "--depth=500"],
+            cwd=repo_path, check=True, timeout=60,
+        )
+    except Exception:
+        pass
+    finally:
+        if locked:
+            _release_lock(repo_name)
 
     return repo_path
 
@@ -171,6 +286,65 @@ def get_top_changed_files(repo_path: Path, top_n: int = 10) -> list[str]:
           if line:
               counter[line] += 1
       return [f for f, _ in counter.most_common(top_n)]
+
+def get_file_commit_counts(repo_path: Path) -> dict:
+    """轻量：获取每个文件的 commit 次数，用于风险评估。"""
+    from collections import Counter
+
+    result = subprocess.run(
+        ["git", "log", "--pretty=format:", "--name-only"],
+        cwd=repo_path, capture_output=True, text=True, encoding="utf-8", timeout=30,
+    )
+    counter = Counter()
+    for line in result.stdout.strip().split("\n"):
+        line = line.strip()
+        if line:
+            counter[line] += 1
+    return dict(counter)
+
+
+def get_repo_summary(repo_path: Path) -> dict:
+    """快速聚合仓库概要统计。"""
+    # Total authors + recent commits in one pass
+    log_result = subprocess.run(
+        ["git", "log", "--pretty=format:%an|%ai|%s", "-50"],
+        cwd=repo_path, capture_output=True, text=True, encoding="utf-8", timeout=30,
+    )
+    authors = set()
+    recent = []
+    for line in log_result.stdout.strip().split("\n"):
+        if not line: continue
+        parts = line.split("|", 2)
+        if len(parts) == 3:
+            authors.add(parts[0])
+            if len(recent) < 15:
+                recent.append({"author": parts[0], "date": parts[1][:10], "message": parts[2][:80]})
+
+    # Total commit count
+    count_result = subprocess.run(
+        ["git", "rev-list", "--count", "HEAD"],
+        cwd=repo_path, capture_output=True, text=True, encoding="utf-8", timeout=15,
+    )
+    total_commits = int(count_result.stdout.strip() or 0)
+
+    # Total files
+    files_result = subprocess.run(
+        ["git", "ls-tree", "-r", "HEAD"],
+        cwd=repo_path, capture_output=True, text=True, encoding="utf-8", timeout=15,
+    )
+    total_files = len([l for l in files_result.stdout.split("\n") if l.strip()])
+
+    # Top changed files
+    top = get_top_changed_files(repo_path, top_n=10)
+
+    return {
+        "total_commits": total_commits,
+        "total_files": total_files,
+        "total_authors": len(authors),
+        "top_files": top,
+        "recent_commits": recent,
+    }
+
 
 def get_repo_health_stats(repo_path: Path, top_n: int = 10) -> list[dict]:
     """旧版——保留向后兼容。推荐使用 get_file_health_stats。"""

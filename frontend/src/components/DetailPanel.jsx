@@ -10,7 +10,7 @@ function DetailPanel({ node, isFunctionMode }) {
 
   const func = node.function || node.klass
   const changeType = node.change_type
-  const llmNote = node.llm_note
+  const llmNote = node.llm_note || node.summary
   const diffStats = node.diff_stats
   const prTitle = node.pr_title
 

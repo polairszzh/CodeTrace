@@ -3,10 +3,10 @@ import asyncio
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from models.schemas import TraceRequest, TraceResponse, TimelineNode, DiffStats
-from services.git_service import clone_or_pull_repo, get_file_commits, get_commit_diff_stats, list_files_at_commit, get_file_content_at_commit
+from services.git_service import clone_or_pull_repo, get_file_commits, get_commit_diff_stats, list_files_at_commit, get_file_content_at_commit, get_file_commit_counts, get_repo_summary
 from services.github_service import GitHubClient
 from services.llm_service import LLMService
-from services.ast_service import trace_function_across_commits, trace_class_across_commits, extract_functions, extract_classes, get_language_for_file
+from services.ast_service import trace_function_across_commits, trace_class_across_commits, extract_symbols_fast
 from services.agent import registry
 from services.agent.planner import AgentPlanner
 from services.agent.graph import run_agent
@@ -283,7 +283,7 @@ async def repo_files(repo_url: str, path: str = ""):
 
 @router.get("/repo/symbols")
 async def repo_symbols(repo_url: str, file_path: str):
-    """返回指定文件当前 HEAD 的所有函数名和 class 名。"""
+    """返回指定文件当前 HEAD 的所有函数名和 class 名（使用轻量提取器）。"""
     try:
         repo_path = clone_or_pull_repo(repo_url)
     except Exception as e:
@@ -294,17 +294,68 @@ async def repo_symbols(repo_url: str, file_path: str):
     except Exception as e:
         raise HTTPException(status_code=404, detail=f"文件获取失败：{str(e)}")
 
-    lang = get_language_for_file(file_path)
+    return extract_symbols_fast(content, file_path)
 
-    functions = []
-    classes = []
+
+@router.get("/repo/file-risks")
+async def repo_file_risks(repo_url: str):
+    """轻量：返回每个文件的风险等级，用于文件树着色。"""
     try:
-        functions = extract_functions(content, lang)
-        classes = extract_classes(content, lang)
+        repo_path = clone_or_pull_repo(repo_url)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"仓库操作失败：{str(e)}")
+
+    try:
+        counts = get_file_commit_counts(repo_path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"风险分析失败：{str(e)}")
+
+    # Percentile-based risk assignment
+    if not counts:
+        return {"risks": {}}
+
+    values = sorted(counts.values())
+    n = len(values)
+    p80 = values[int(n * 0.8)] if n > 5 else 0
+    p50 = values[int(n * 0.5)] if n > 2 else 0
+
+    risks = {}
+    for filepath, count in counts.items():
+        if count >= p80 and p80 > 0:
+            risks[filepath] = "high"
+        elif count >= p50 and p50 > 0:
+            risks[filepath] = "medium"
+        else:
+            risks[filepath] = "low"
+
+    return {"risks": risks}
+
+
+@router.get("/repo/dashboard")
+async def repo_dashboard(repo_url: str):
+    """仓库仪表盘数据：概要统计 + 风险分布 + 近期活动。"""
+    try:
+        repo_path = clone_or_pull_repo(repo_url)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"仓库操作失败：{str(e)}")
+
+    summary = get_repo_summary(repo_path)
+
+    # Risk distribution
+    try:
+        counts = get_file_commit_counts(repo_path)
+        values = sorted(counts.values())
+        n = len(values)
+        p80 = values[int(n * 0.8)] if n > 5 else 0
+        p50 = values[int(n * 0.5)] if n > 2 else 0
+        high = sum(1 for c in counts.values() if c >= p80 and p80 > 0)
+        medium = sum(1 for c in counts.values() if p50 <= c < p80)
+        low = sum(1 for c in counts.values() if c < p50)
+        risk_dist = {"high": high, "medium": medium, "low": low}
     except Exception:
-        pass
+        risk_dist = {"high": 0, "medium": 0, "low": 0}
 
     return {
-        "functions": [{"name": f["name"], "start_line": f["start_line"]} for f in functions],
-        "classes": [{"name": c["name"], "start_line": c["start_line"], "methods": [m["name"] for m in c.get("methods", [])]} for c in classes],
+        "summary": summary,
+        "risk_distribution": risk_dist,
     }
