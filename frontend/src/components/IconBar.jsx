@@ -2,7 +2,7 @@ function IconBar({ active, onSelect, fileTreeOpen, onToggleFileTree }) {
   const views = [
     { id: 'trace', icon: '🔍', label: '代码追溯' },
     { id: 'agent', icon: '🤖', label: 'Agent 分析' },
-    { id: 'dashboard', icon: '📊', label: '仪表盘', disabled: true },
+    { id: 'dashboard', icon: '📊', label: '仪表盘' },
   ]
 
   return (

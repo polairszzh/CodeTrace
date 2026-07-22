@@ -1,3 +1,4 @@
+import re
 import tree_sitter_python as tspython
 import tree_sitter_javascript as tsjavascript
 from tree_sitter import Language, Parser
@@ -11,6 +12,117 @@ JS_LANGUAGE = Language(tsjavascript.language())
 FUNC_TYPES = {"function_definition", "function_declaration", "arrow_function", "method_definition"}
 CLASS_TYPES = {"class_definition", "class_declaration"}
 
+# ── Lightweight extractor registry ──────────────────────────────
+# Each entry: (func_regex, class_regex) or None to fallback to tree-sitter.
+# Only used by /api/repo/symbols — trace_function_across_commits always uses tree-sitter.
+_LIGHTWEIGHT = [
+    (".py", re.compile(r'^[ \t]*(?:async\s+)?def\s+(\w+)\s*\(', re.MULTILINE),
+           re.compile(r'^[ \t]*class\s+(\w+)\s*[:\(]', re.MULTILINE)),
+    (".go", re.compile(r'^[ \t]*func\s+(\w+)\s*\(', re.MULTILINE),
+           re.compile(r'^[ \t]*type\s+(\w+)\s+(struct|interface)\b', re.MULTILINE)),
+    (".rs", re.compile(r'^[ \t]*(?:pub\s+(?:unsafe\s+)?)?fn\s+(\w+)\s*[\(<]', re.MULTILINE),
+           re.compile(r'^[ \t]*(?:pub\s+)?(?:struct|trait|enum|union)\s+(\w+)', re.MULTILINE)),
+    (".java", re.compile(r'(?:\bpublic\b|\bprivate\b|\bprotected\b|\bstatic\b|\bfinal\b|\s)*\s+(\w+)\s*\(', re.MULTILINE),
+           re.compile(r'^[ \t]*(?:public\s+|private\s+|protected\s+|static\s+|abstract\s+|final\s+)*\s*(?:class|interface|enum|record)\s+(\w+)', re.MULTILINE)),
+    (".kt", re.compile(r'^[ \t]*(?:private\s+|public\s+|internal\s+|protected\s+|suspend\s+|inline\s+|override\s+|fun\s+)*\s*fun\s+(\w+)\s*[\(<]', re.MULTILINE),
+           re.compile(r'^[ \t]*(?:private\s+|public\s+|internal\s+|protected\s+|data\s+|sealed\s+|open\s+|abstract\s+)*\s*(?:class|interface|enum|object)\s+(\w+)', re.MULTILINE)),
+]
+# Map extension → (func_regex, class_regex)
+_LIGHTWEIGHT_MAP = {}
+for ext, fre, cre in _LIGHTWEIGHT:
+    _LIGHTWEIGHT_MAP[ext] = (fre, cre)
+
+# JS/TS extensions — always use tree-sitter
+_JS_EXTS = {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}
+_PY_KEYWORDS = frozenset({
+    "False", "None", "True", "and", "as", "assert", "async", "await",
+    "break", "class", "continue", "def", "del", "elif", "else", "except",
+    "finally", "for", "from", "global", "if", "import", "in", "is",
+    "lambda", "nonlocal", "not", "or", "pass", "raise", "return",
+    "try", "while", "with", "yield",
+})
+
+
+def extract_symbols_fast(source_code: str, file_path: str) -> dict:
+    """
+    轻量符号提取——仅用于 /api/repo/symbols（前端展示）。
+    返回 {functions: [{name, start_line}], classes: [{name, start_line}]}
+
+    有 regex 注册的语言走 regex，JS/TS 走 tree-sitter fallback。
+    """
+    ext = Path(file_path).suffix.lower()
+
+    # ── JS/TS: use tree-sitter ──
+    if ext in _JS_EXTS:
+        lang = JS_LANGUAGE
+        parser = Parser(lang)
+        tree = parser.parse(bytes(source_code, "utf8"))
+        functions = []
+        classes = []
+        def walk(node):
+            if node.type in FUNC_TYPES:
+                nn = node.child_by_field_name("name")
+                if nn:
+                    functions.append({
+                        "name": source_code[nn.start_byte:nn.end_byte],
+                        "start_line": node.start_point[0] + 1,
+                    })
+            if node.type in CLASS_TYPES:
+                nn = node.child_by_field_name("name")
+                if nn:
+                    classes.append({
+                        "name": source_code[nn.start_byte:nn.end_byte],
+                        "start_line": node.start_point[0] + 1,
+                    })
+            for child in node.children:
+                walk(child)
+        walk(tree.root_node)
+        return {"functions": functions, "classes": classes}
+
+    # ── Regex languages ──
+    pair = _LIGHTWEIGHT_MAP.get(ext)
+    if pair is None:
+        # Unknown extension: fallback to Python
+        pair = _LIGHTWEIGHT_MAP[".py"]
+
+    func_re, class_re = pair
+
+    functions = []
+    for m in func_re.finditer(source_code):
+        name = m.group(1)
+        if ext == ".py" and name in _PY_KEYWORDS:
+            continue
+        line = source_code[:m.start()].count("\n") + 1
+        functions.append({"name": name, "start_line": line})
+
+    classes = []
+    for m in class_re.finditer(source_code):
+        name = m.group(1)
+        if ext == ".py" and name in _PY_KEYWORDS:
+            continue
+        line = source_code[:m.start()].count("\n") + 1
+        classes.append({"name": name, "start_line": line})
+
+    # Deduplicate by line number
+    seen_funcs = set()
+    unique_funcs = []
+    for f in functions:
+        key = (f["name"], f["start_line"])
+        if key not in seen_funcs:
+            seen_funcs.add(key)
+            unique_funcs.append(f)
+
+    seen_classes = set()
+    unique_classes = []
+    for c in classes:
+        key = (c["name"], c["start_line"])
+        if key not in seen_classes:
+            seen_classes.add(key)
+            unique_classes.append(c)
+
+    return {"functions": unique_funcs, "classes": unique_classes}
+
+
 def get_language_for_file(file_path: str):
     if file_path.endswith((".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs")):
         return JS_LANGUAGE
@@ -20,18 +132,18 @@ def get_language_for_file(file_path: str):
 def extract_functions(source_code: str, language=None) -> list[dict]:
     """
     提取源代码中的函数定义。
-
-    Args:
-        source_code (str): 源代码字符串。
-        language: 待提取代码语言
+    对 Python 用 regex（可靠）+ tree-sitter（补 body）；
+    对 JS/TS 用 tree-sitter。
 
     Returns:
-        list[dict]: 包含函数名称、参数和起始行号的字典列表。
+        list[dict]: {name, start_line, end_line, body}
     """
-    if language is None:
-        language = PY_LANGUAGE
-    parser = Parser(language)
+    # ── Python: hybrid regex + tree-sitter ──
+    if language is None or language is PY_LANGUAGE:
+        return _extract_python_functions(source_code)
 
+    # ── JS/TS: tree-sitter only ──
+    parser = Parser(language)
     tree = parser.parse(bytes(source_code, "utf8"))
     functions = []
 
@@ -40,8 +152,9 @@ def extract_functions(source_code: str, language=None) -> list[dict]:
             name_node = node.child_by_field_name("name")
             body_node = node.child_by_field_name("body")
             if name_node and body_node:
+                name = source_code[name_node.start_byte:name_node.end_byte]
                 functions.append({
-                    "name": source_code[name_node.start_byte:name_node.end_byte],
+                    "name": name,
                     "start_line": node.start_point[0] + 1,
                     "end_line": node.end_point[0] + 1,
                     "body": source_code[node.start_byte:node.end_byte],
@@ -53,33 +166,82 @@ def extract_functions(source_code: str, language=None) -> list[dict]:
     return functions
 
 
+_PY_FUNC_RE = re.compile(r'^[ \t]*(?:async\s+)?def\s+(\w+)\s*\(', re.MULTILINE)
+_PY_CLASS_RE = re.compile(r'^[ \t]*class\s+(\w+)\s*[:\(]', re.MULTILINE)
+
+
+def _extract_python_functions(source_code: str) -> list[dict]:
+    """Python 专用：regex 定位函数名 + tree-sitter 补 body。"""
+    # Step 1: regex 找到所有 def（可靠，不遗漏）
+    matches = list(_PY_FUNC_RE.finditer(source_code))
+
+    # Step 2: tree-sitter 解析 body（能拿多少拿多少）
+    parser = Parser(PY_LANGUAGE)
+    tree = parser.parse(bytes(source_code, "utf8"))
+    ts_funcs = {}  # (name, line) → {start_line, end_line, body}
+
+    def walk(node):
+        if node.type in FUNC_TYPES:
+            nn = node.child_by_field_name("name")
+            bn = node.child_by_field_name("body")
+            if nn and bn:
+                name = source_code[nn.start_byte:nn.end_byte]
+                line = node.start_point[0] + 1
+                ts_funcs[(name, line)] = {
+                    "name": name,
+                    "start_line": line,
+                    "end_line": node.end_point[0] + 1,
+                    "body": source_code[node.start_byte:node.end_byte],
+                }
+        for child in node.children:
+            walk(child)
+    walk(tree.root_node)
+
+    # Step 3: 合并——regex 做骨架，tree-sitter 补充 body/end_line
+    seen = set()
+    functions = []
+    for m in matches:
+        name = m.group(1)
+        line = source_code[:m.start()].count("\n") + 1
+        key = (name, line)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        ts = ts_funcs.get(key)
+        functions.append({
+            "name": name,
+            "start_line": line,
+            "end_line": ts["end_line"] if ts else line,
+            "body": ts["body"] if ts else "",
+        })
+    return functions
+
+
 def extract_classes(source_code: str, language=None) -> list[dict]:
     """
     提取源代码中的 class 定义及其方法列表。
-
-    Args:
-        source_code (str): 源代码字符串。
-        language: tree-sitter Language 对象。
+    对 Python 用 regex + tree-sitter hybrid；对 JS/TS 用 tree-sitter。
 
     Returns:
         list[dict]: 每项含 name / start_line / end_line / body / methods
     """
-    if language is None:
-        language = PY_LANGUAGE
-    parser = Parser(language)
+    if language is None or language is PY_LANGUAGE:
+        return _extract_python_classes(source_code)
 
+    # ── JS/TS: tree-sitter only ──
+    parser = Parser(language)
     tree = parser.parse(bytes(source_code, "utf8"))
     classes = []
 
     def walk_methods(node):
-        """在 class body 内收集方法定义"""
         methods = []
         if node.type in FUNC_TYPES:
-            name_node = node.child_by_field_name("name")
-            body_node = node.child_by_field_name("body")
-            if name_node and body_node:
+            nn = node.child_by_field_name("name")
+            bn = node.child_by_field_name("body")
+            if nn and bn:
                 methods.append({
-                    "name": source_code[name_node.start_byte:name_node.end_byte],
+                    "name": source_code[nn.start_byte:nn.end_byte],
                     "start_line": node.start_point[0] + 1,
                     "end_line": node.end_point[0] + 1,
                     "body": source_code[node.start_byte:node.end_byte],
@@ -90,21 +252,82 @@ def extract_classes(source_code: str, language=None) -> list[dict]:
 
     def walk(node):
         if node.type in CLASS_TYPES:
-            name_node = node.child_by_field_name("name")
-            body_node = node.child_by_field_name("body")
-            if name_node and body_node:
-                methods = walk_methods(body_node)
+            nn = node.child_by_field_name("name")
+            bn = node.child_by_field_name("body")
+            if nn and bn:
                 classes.append({
-                    "name": source_code[name_node.start_byte:name_node.end_byte],
+                    "name": source_code[nn.start_byte:nn.end_byte],
                     "start_line": node.start_point[0] + 1,
                     "end_line": node.end_point[0] + 1,
                     "body": source_code[node.start_byte:node.end_byte],
-                    "methods": methods,
+                    "methods": walk_methods(bn),
                 })
         for child in node.children:
             walk(child)
 
     walk(tree.root_node)
+    return classes
+
+
+def _extract_python_classes(source_code: str) -> list[dict]:
+    """Python 专用：regex 定位类名 + tree-sitter 补 body/methods。"""
+    matches = list(_PY_CLASS_RE.finditer(source_code))
+
+    parser = Parser(PY_LANGUAGE)
+    tree = parser.parse(bytes(source_code, "utf8"))
+    ts_classes = {}
+
+    def walk_methods(node):
+        methods = []
+        if node.type in FUNC_TYPES:
+            nn = node.child_by_field_name("name")
+            bn = node.child_by_field_name("body")
+            if nn and bn:
+                methods.append({
+                    "name": source_code[nn.start_byte:nn.end_byte],
+                    "start_line": node.start_point[0] + 1,
+                    "end_line": node.end_point[0] + 1,
+                    "body": source_code[node.start_byte:node.end_byte],
+                })
+        for child in node.children:
+            methods.extend(walk_methods(child))
+        return methods
+
+    def walk(node):
+        if node.type in CLASS_TYPES:
+            nn = node.child_by_field_name("name")
+            bn = node.child_by_field_name("body")
+            if nn and bn:
+                name = source_code[nn.start_byte:nn.end_byte]
+                line = node.start_point[0] + 1
+                ts_classes[(name, line)] = {
+                    "name": name,
+                    "start_line": line,
+                    "end_line": node.end_point[0] + 1,
+                    "body": source_code[node.start_byte:node.end_byte],
+                    "methods": walk_methods(bn),
+                }
+        for child in node.children:
+            walk(child)
+    walk(tree.root_node)
+
+    seen = set()
+    classes = []
+    for m in matches:
+        name = m.group(1)
+        line = source_code[:m.start()].count("\n") + 1
+        key = (name, line)
+        if key in seen:
+            continue
+        seen.add(key)
+        ts = ts_classes.get(key)
+        classes.append({
+            "name": name,
+            "start_line": line,
+            "end_line": ts["end_line"] if ts else line,
+            "body": ts["body"] if ts else "",
+            "methods": ts["methods"] if ts else [],
+        })
     return classes
 
 
