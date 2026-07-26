@@ -80,7 +80,7 @@ function DetailPanel({ node, isFunctionMode }) {
             {node.klass ? 'CLASS' : 'FUNCTION'} — {func.name}{func.start_line ? ` (L${func.start_line})` : ''}
           </div>
           <pre className="p-3 rounded-lg text-sm overflow-x-auto leading-relaxed font-mono"
-            style={{ background: '#0d0d12', color: '#e2e8f0', border: '1px solid #2e303a' }}>
+            style={{ background: 'var(--color-surface-alt)', color: 'var(--color-text)', border: '1px solid var(--color-border)' }}>
             {func.body}
           </pre>
         </div>
@@ -89,7 +89,7 @@ function DetailPanel({ node, isFunctionMode }) {
       {/* migration */}
       {node.migration && (
         <div className="p-3 rounded-lg text-sm"
-          style={{ background: 'rgba(128, 90, 213, 0.1)', borderLeft: '3px solid #805ad5' }}>
+          style={{ background: 'var(--color-surface-alt)', borderLeft: '3px solid var(--color-accent)' }}>
           迁移至 {node.file}
         </div>
       )}

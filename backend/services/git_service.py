@@ -667,13 +667,15 @@ def get_co_change_trends(repo_path: Path, window_days: int = 30) -> list[dict]:
             continue
         old_p = old["partners"] or 1
         growth = round((rec["partners"] - old["partners"]) / old_p, 2)
+        delta = rec["partners"] - old["partners"]
+        rec_p = rec["partners"]
         results.append({
             "file": f,
             "recent_partners": rec["partners"],
             "old_partners": old["partners"],
             "coupling_growth": growth,
             "boundary_crossings": rec["bx"],
-            "risk": "high" if growth > 0.5 else ("medium" if growth > 0.2 else "low"),
+            "risk": "high" if rec_p >= 8 and delta >= 5 else ("medium" if rec_p >= 4 and delta >= 2 else "low"),
         })
 
     results.sort(key=lambda x: (-x["coupling_growth"], -x["boundary_crossings"]))
@@ -769,7 +771,7 @@ def get_co_change_edges(repo_path: Path, window_days: int = 30) -> dict:
             "old_partners": old_p,
             "coupling_growth": growth,
             "boundary_crossings": bx_counter.get(f, 0),
-            "risk": "high" if growth > 0.5 else ("medium" if growth > 0.2 else "low"),
+            "risk": "high" if rec_p >= 8 and (rec_p - old_p) >= 5 else ("medium" if rec_p >= 4 and (rec_p - old_p) >= 2 else "low"),
         })
 
     # 按 coupling_growth 降序，取 top 30

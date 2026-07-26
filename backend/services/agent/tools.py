@@ -228,12 +228,12 @@ def _analyze_coupling(repo_path):
         return {"coupling_risk": [], "note": "数据不足，仓库活跃度较低或提交历史不够长"}
     llm = LLMService()
     trends = llm.analyze_coupling_trends(trends)
-    high_risk = [t for t in trends if t.get("risk") == "high" or (t.get("coupling_growth", 0) > 0.3 and t.get("recent_partners", 0) > 3)]
+    high_risk = [t for t in trends if t.get("risk") == "high"]
     return {
         "total_files": len(trends),
         "high_risk_count": len(high_risk),
         "coupling_risk": trends,
-        "note": "coupling_growth > 0.3 且 partner > 3 表示耦合面显著扩大，建议关注",
+        "note": "growth > 0.8 且绝对增量 >= 3 表示耦合面显著扩大",
     }
 
 

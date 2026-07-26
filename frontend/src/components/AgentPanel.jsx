@@ -1,4 +1,6 @@
 import { useState, useEffect } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import RepoInput from './RepoInput'
 import CouplingGraph from './CouplingGraph'
 import ModuleErosion from './ModuleErosion'
@@ -79,8 +81,8 @@ function AgentPanel() {
 
       {error && (
         <div className="mb-4 px-3 py-1.5 rounded-lg text-sm"
-          style={{ background: '#fff5f5', color: '#e53e3e', border: '1px solid #fed7d7' }}>
-          {error}
+          style={{ background: 'var(--color-surface-alt)', color: 'var(--color-text)', border: '1px solid var(--color-border)' }}>
+          <span style={{ color: '#e53e3e', fontWeight: 500 }}>⚠</span> {error}
         </div>
       )}
 
@@ -94,10 +96,11 @@ function AgentPanel() {
                 background: 'var(--color-surface-card)',
                 border: '1px solid var(--color-border)',
                 color: 'var(--color-text)',
-                whiteSpace: 'pre-wrap',
               }}>
               <h3 className="text-base font-semibold mt-0 mb-3" style={{ color: 'var(--color-text-heading)' }}>分析报告</h3>
-              {finalReport.summary}
+              <div className="markdown-report">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{finalReport.summary}</ReactMarkdown>
+              </div>
             </div>
           ) : !running && !error ? (
             <div className="flex-1 flex items-center justify-center text-sm rounded-xl"

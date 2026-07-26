@@ -34,9 +34,33 @@ SYSTEM_PROMPT = """你是一个代码仓库分析 Agent。你的任务是使用�
 - 通常需要 5-10 步才能形成有意义的结论
 - 使用中文输出最终报告
 
-输出格式：
-- 有工具调用：正常输出 tool_calls
-- 完成分析：输出中文总结（含项目概况、热点、风险、建议）"""
+输出格式 — 完成分析时，按以下结构化 Markdown 模板输出最终报告（不要用代码块包裹，直接输出 Markdown）：
+
+## 项目总览
+[2-3 段：项目定位（从代码推断这是做什么的）、架构分层（主要模块及其职责）、当前阶段（快速迭代/稳定维护/重构期）、活跃度]
+
+## 变更热点
+按模块/文件列出，每个项目包含：
+- 这个模块负责什么（一句话说清，让不熟悉项目的人也能理解）
+- 变更频率和原因
+- **意味着什么**：这个变更模式对项目的影响
+
+## 风险分析
+每项风险包含：
+- 风险描述
+- 为什么是风险，不处理会怎样
+- 建议方向
+
+## 改进建议
+每条建议区分视角：
+- **对开发者**：具体可行的代码/架构改进
+- **对管理者**：资源/流程/优先级层面的建议
+
+要求：
+- 每个模块/文件名首次出现时，紧跟一句话说明它是什么
+- 每条结论同时包含"事实"和"解读"两层
+- 总字数 800-1200 字
+- ⚠️ 严禁输出"已收集足够信息""现在可以输出报告"等占位文本，直接开始写报告正文"""
 
 
 def build_agent(registry: ToolRegistry, llm: LLMService | None = None):
@@ -77,7 +101,30 @@ def build_agent(registry: ToolRegistry, llm: LLMService | None = None):
 
         # LLM 想总结（没调工具）
         if not tool_calls and msg.get("content"):
-            updates["final_report"] = msg["content"]
+            content = msg["content"].strip()
+            # 检测占位文本：太短或像"已收集够信息"之类的空话 → 拒绝，重试一次
+            placeholder_patterns = ["已收集", "足够的信息", "可以输出", "now i can", "i've gathered", "i have collected"]
+            is_placeholder = len(content) < 80 or any(p in content.lower() for p in placeholder_patterns)
+            if is_placeholder:
+                # 追加拒绝消息，重新调一次 LLM
+                retry_messages = new_messages + [{
+                    "role": "user",
+                    "content": "不要输出占位文本，直接按要求的 Markdown 格式输出完整的分析报告。开始写正文。"
+                }]
+                retry = llm._call_with_tools(retry_messages, tools_schemas)
+                retry_tool_calls = retry.get("tool_calls")
+                retry_content = retry.get("content", "").strip()
+                # 重试后如果还是占位或无内容，只能 fallthrough 到 summarize
+                if not retry_tool_calls and (not retry_content or len(retry_content) < 80):
+                    updates["messages"] = new_messages  # 不追加重试记录，让 summarize 兜底
+                elif retry_tool_calls:
+                    retry_asst = {"role": "assistant", "content": retry_content or None, "tool_calls": retry_tool_calls}
+                    updates["messages"] = retry_messages + [retry_asst]
+                    updates["step_count"] = state["step_count"] + 1
+                else:
+                    updates["final_report"] = retry_content
+            else:
+                updates["final_report"] = content
 
         return updates
 
@@ -140,7 +187,12 @@ def build_agent(registry: ToolRegistry, llm: LLMService | None = None):
         findings_text = "\n".join(findings_short)
         try:
             resp = llm._call([
-                {"role": "system", "content": "你是代码仓库分析报告撰写人。根据以下原始分析数据，写一份简洁、有结构的报告。分成：项目概况（重点）、热点与风险（重点）、关键发现（列出）、建议（列出）。不要列举原始工具名和JSON。每条结论用一句话。总字数不超过600字。"},
+                {"role": "system", "content": "你是代码仓库分析报告撰写人。根据以下原始分析数据，按结构化 Markdown 写一份报告。模板：\n\n"
+                "## 项目总览\n[项目定位、架构分层、当前阶段、活跃度]\n\n"
+                "## 变更热点\n每项：模块名（一句话说明它是做什么的）+ 变更情况 + **意味着什么**\n\n"
+                "## 风险分析\n每项：风险描述 + 为什么不处理会怎样 + 建议\n\n"
+                "## 改进建议\n每项：对开发者的建议 + 对管理者的建议\n\n"
+                "要求：每个模块首次出现时紧跟一句话解释、每条结论有事实+解读两层、总字数 800-1200 字。不要列举原始工具名和 JSON。"},
                 {"role": "user", "content": f"目标：{state['goal']}\n\n分析数据：\n{findings_text[:3000]}"},
             ], temperature=0.3)
             report = resp if resp else "（LLM 未能生成报告。）"

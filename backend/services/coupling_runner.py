@@ -76,7 +76,7 @@ async def run_coupling_analysis(repo_url: str) -> dict:
             "edges": data["edges"],
             "total_files": len(data["nodes"]),
             "high_risk_count": len(high_risk),
-            "note": "coupling_growth > 0.3 且 recent_partners > 3 表示耦合面显著扩大",
+            "note": "growth > 0.8 且绝对增量 >= 3 表示耦合面显著扩大",
         }
 
     return await asyncio.to_thread(_sync)

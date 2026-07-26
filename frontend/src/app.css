@@ -36,3 +36,87 @@ body {
   background: var(--color-surface);
   color: var(--color-text);
 }
+
+/* ── Markdown 报告渲染 ──────────────────────────────── */
+.markdown-report h1,
+.markdown-report h2,
+.markdown-report h3,
+.markdown-report h4 {
+  color: var(--color-text-heading);
+  font-weight: 600;
+  margin-top: 1.5em;
+  margin-bottom: 0.5em;
+}
+.markdown-report h1 { font-size: 1.4em; margin-top: 0; }
+.markdown-report h2 { font-size: 1.15em; border-bottom: 1px solid var(--color-border); padding-bottom: 0.3em; }
+.markdown-report h3 { font-size: 1.05em; }
+.markdown-report h4 { font-size: 1em; }
+
+.markdown-report p { margin: 0.5em 0; line-height: 1.65; }
+.markdown-report strong { color: var(--color-text-heading); font-weight: 600; }
+.markdown-report em { font-style: italic; }
+
+.markdown-report ul,
+.markdown-report ol { margin: 0.4em 0; padding-left: 1.5em; }
+.markdown-report li { margin: 0.25em 0; }
+.markdown-report li > p { margin: 0; }
+
+.markdown-report code {
+  background: var(--color-surface-alt);
+  color: var(--color-accent);
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+  font-size: 0.9em;
+}
+.markdown-report pre {
+  background: var(--color-surface-alt);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 1em;
+  overflow-x: auto;
+  margin: 0.75em 0;
+}
+.markdown-report pre code {
+  background: none;
+  padding: 0;
+  border-radius: 0;
+  font-size: 0.85em;
+  color: var(--color-text);
+}
+
+.markdown-report table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.75em 0;
+  font-size: 0.9em;
+}
+.markdown-report th,
+.markdown-report td {
+  border: 1px solid var(--color-border);
+  padding: 0.4em 0.6em;
+  text-align: left;
+}
+.markdown-report th {
+  background: var(--color-surface-alt);
+  color: var(--color-text-heading);
+  font-weight: 500;
+}
+
+.markdown-report blockquote {
+  border-left: 3px solid var(--color-accent);
+  margin: 0.75em 0;
+  padding: 0.3em 1em;
+  background: var(--color-surface-alt);
+  border-radius: 0 6px 6px 0;
+}
+
+.markdown-report hr {
+  border: none;
+  border-top: 1px solid var(--color-border);
+  margin: 1.5em 0;
+}
+
+.markdown-report a {
+  color: var(--color-accent);
+  text-decoration: underline;
+}
