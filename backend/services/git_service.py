@@ -5,8 +5,9 @@ from pathlib import Path
 
 CACHE_DIR = Path(os.getenv("CODETRACE_CACHE", "/tmp/codetrace"))
 
-# 内存缓存：repo_url → repo_path
+# 内存缓存：repo_url → (repo_path, timestamp)
 _cache = {}
+_CACHE_TTL = 60  # 秒，避免跨请求读到过时数据
 
 # ── 并发锁 ──────────────────────────────────────────
 # 用 mkdir 原子性做锁（跨平台，不需要第三方库）
@@ -94,6 +95,14 @@ def clone_or_pull_repo(repo_url: str) -> Path:
     repo_name = repo_url.rstrip("/").split("/")[-1].replace(".git", "")
     repo_path = CACHE_DIR / repo_name
 
+    # 内存缓存命中（60s TTL），避免重复网络请求
+    cached = _cache.get(repo_url)
+    if cached:
+        entry_path, entry_time = cached
+        if time.time() - entry_time < _CACHE_TTL:
+            return entry_path
+        del _cache[repo_url]
+
     # 定期清理过期缓存
     _maybe_cleanup()
 
@@ -108,10 +117,11 @@ def clone_or_pull_repo(repo_url: str) -> Path:
         finally:
             if locked:
                 _release_lock(repo_name)
-        _cache[repo_url] = repo_path
+        _cache[repo_url] = (repo_path, time.time())
         return repo_path
 
-    # ── 已存在 → 检查远程是否有新 commit ──
+    # ── 已存在 → 缓存并检查远程是否有新 commit ──
+    _cache[repo_url] = (repo_path, time.time())
     remote_hash = _remote_head(repo_url)
     if remote_hash is None:
         return repo_path

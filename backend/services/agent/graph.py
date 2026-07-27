@@ -65,7 +65,6 @@ SYSTEM_PROMPT = """你是一个代码仓库分析 Agent。你的任务是使用�
 
 def build_agent(registry: ToolRegistry, llm: LLMService | None = None, system_prompt: str | None = None):
     """构建 LangGraph StateGraph"""
-    prompt = system_prompt or SYSTEM_PROMPT
     if llm is None:
         llm = LLMService(
             api_key=os.getenv("LLM_API_KEY", ""),

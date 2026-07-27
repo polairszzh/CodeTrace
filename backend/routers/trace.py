@@ -418,7 +418,7 @@ async def agent_ask(req: AskRequest):
             ask_registry,
             goal=goal,
             repo_url=req.repo_url,
-            max_steps=3,
+            max_steps=2,
             system_prompt=ASK_SYSTEM_PROMPT,
         ):
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
