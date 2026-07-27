@@ -63,7 +63,7 @@ SYSTEM_PROMPT = """你是一个代码仓库分析 Agent。你的任务是使用�
 - ⚠️ 严禁输出"已收集足够信息""现在可以输出报告"等占位文本，直接开始写报告正文"""
 
 
-def build_agent(registry: ToolRegistry, llm: LLMService | None = None, system_prompt: str | None = None):
+def build_agent(registry: ToolRegistry, llm: LLMService | None = None):
     """构建 LangGraph StateGraph"""
     if llm is None:
         llm = LLMService(
@@ -261,7 +261,7 @@ def run_agent(
         dict: {steps, findings, final_report, step_count, error}
     """
     effective_prompt = system_prompt or SYSTEM_PROMPT
-    app = build_agent(registry, system_prompt=effective_prompt)
+    app = build_agent(registry)
 
     initial: AgentState = {
         "goal": goal,
@@ -309,7 +309,7 @@ async def run_agent_stream(
       {"type": "done"}                             — 完成
     """
     effective_prompt = system_prompt or SYSTEM_PROMPT
-    app = build_agent(registry, system_prompt=effective_prompt)
+    app = build_agent(registry)
 
     initial: AgentState = {
         "goal": goal,
