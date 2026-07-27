@@ -5,8 +5,9 @@ from pathlib import Path
 
 CACHE_DIR = Path(os.getenv("CODETRACE_CACHE", "/tmp/codetrace"))
 
-# 内存缓存：repo_url → repo_path
+# 内存缓存：repo_url → (repo_path, timestamp)
 _cache = {}
+_CACHE_TTL = 60  # 秒，避免跨请求读到过时数据
 
 # ── 并发锁 ──────────────────────────────────────────
 # 用 mkdir 原子性做锁（跨平台，不需要第三方库）
@@ -94,6 +95,14 @@ def clone_or_pull_repo(repo_url: str) -> Path:
     repo_name = repo_url.rstrip("/").split("/")[-1].replace(".git", "")
     repo_path = CACHE_DIR / repo_name
 
+    # 内存缓存命中（60s TTL），避免重复网络请求
+    cached = _cache.get(repo_url)
+    if cached:
+        entry_path, entry_time = cached
+        if time.time() - entry_time < _CACHE_TTL:
+            return entry_path
+        del _cache[repo_url]
+
     # 定期清理过期缓存
     _maybe_cleanup()
 
@@ -108,10 +117,11 @@ def clone_or_pull_repo(repo_url: str) -> Path:
         finally:
             if locked:
                 _release_lock(repo_name)
-        _cache[repo_url] = repo_path
+        _cache[repo_url] = (repo_path, time.time())
         return repo_path
 
-    # ── 已存在 → 检查远程是否有新 commit ──
+    # ── 已存在 → 缓存并检查远程是否有新 commit ──
+    _cache[repo_url] = (repo_path, time.time())
     remote_hash = _remote_head(repo_url)
     if remote_hash is None:
         return repo_path
@@ -222,6 +232,51 @@ def get_commit_diff_stats(repo_path: Path, commit_hash: str) -> dict:
         "additions": additions,
         "deletions": deletions,
         "files_changed": files_changed,
+    }
+
+def get_commit_diff_content(repo_path: Path, commit_hash: str, max_size: int = 15000) -> dict:
+    """
+    获取指定提交的完整 diff 文本（patch）。
+
+    Args:
+        repo_path: 仓库路径。
+        commit_hash: 提交哈希。
+        max_size: diff 文本最大长度，超长截断。
+
+    Returns:
+        dict: {"patch": str, "files_changed": [str], "additions": int, "deletions": int}
+    """
+    result = subprocess.run(
+        ["git", "show", "--format=", commit_hash],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=15,
+    )
+
+    patch = result.stdout.strip()
+    truncated = len(patch) > max_size
+    if truncated:
+        patch = patch[:max_size] + "\n... (diff 过长已截断)"
+
+    # 变更文件列表
+    files = []
+    for line in patch.split("\n"):
+        if line.startswith("diff --git"):
+            parts = line.split()
+            if len(parts) >= 3:
+                files.append(parts[2].removeprefix("a/"))
+
+    # 通过 --stat 拿精确统计
+    stat = get_commit_diff_stats(repo_path, commit_hash)
+
+    return {
+        "patch": patch,
+        "files_changed": files,
+        "additions": stat["additions"],
+        "deletions": stat["deletions"],
+        "truncated": truncated,
     }
 
 def get_file_content_at_commit(repo_path: Path, commit_hash: str, file_path: str) -> str:

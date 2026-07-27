@@ -233,7 +233,7 @@ def _analyze_coupling(repo_path):
         "total_files": len(trends),
         "high_risk_count": len(high_risk),
         "coupling_risk": trends,
-        "note": "growth > 0.8 且绝对增量 >= 3 表示耦合面显著扩大",
+        "note": "risk=high: 近期伙伴数 >= 8 且绝对增量 >= 5",
     }
 
 

@@ -6,6 +6,7 @@ import Timeline from './components/Timeline'
 import AgentPanel from './components/AgentPanel'
 import Dashboard from './components/Dashboard'
 import ThemeToggle from './components/ThemeToggle'
+import InlineAgent from './components/InlineAgent'
 
 function App() {
   const [tab, setTab] = useState('trace')
@@ -14,6 +15,7 @@ function App() {
   const [currentRepoUrl, setCurrentRepoUrl] = useState('')
   const [selectedFile, setSelectedFile] = useState('')
   const [selectedFunction, setSelectedFunction] = useState('')
+  const [inlineAgent, setInlineAgent] = useState(null)
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
@@ -28,6 +30,10 @@ function App() {
     setSelectedFile(path)
     setSelectedFunction('')
     setFileTreeOpen(false)
+  }
+
+  const handleAskAgent = (ctx) => {
+    setInlineAgent(ctx)
   }
 
   return (
@@ -51,7 +57,7 @@ function App() {
           文件树
         </div>
         <div className="flex-1 overflow-hidden">
-          <FileTree repoUrl={currentRepoUrl} onFileSelect={handleFileSelect} />
+          <FileTree repoUrl={currentRepoUrl} onFileSelect={handleFileSelect} onAskAgent={handleAskAgent} />
         </div>
       </div>
 
@@ -79,13 +85,17 @@ function App() {
                 externalFile={selectedFile}
                 externalFunction={selectedFunction}
               />
-              {timeline && <Timeline data={timeline} />}
+              {timeline && <Timeline data={timeline} repoUrl={currentRepoUrl} onAskAgent={handleAskAgent} />}
             </div>
           )}
-          {tab === 'agent' && <AgentPanel />}
+          {tab === 'agent' && <AgentPanel initialRepo={currentRepoUrl} />}
           {tab === 'dashboard' && <Dashboard />}
         </div>
       </div>
+
+      {inlineAgent && (
+        <InlineAgent context={inlineAgent} onClose={() => setInlineAgent(null)} />
+      )}
     </div>
   )
 }

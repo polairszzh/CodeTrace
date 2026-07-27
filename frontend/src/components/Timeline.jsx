@@ -3,7 +3,7 @@ import DetailPanel from './DetailPanel'
 
 const TYPE_COLORS = { feature: '#3182ce', bugfix: '#e53e3e', refactor: '#805ad5', chore: '#718096', docs: '#58a6ff', test: '#79c0ff' }
 
-function Timeline({ data }) {
+function Timeline({ data, repoUrl, onAskAgent }) {
   const [selectedHash, setSelectedHash] = useState(null)
 
   if (!data) return null
@@ -80,6 +80,28 @@ function Timeline({ data }) {
                     </span>
                   )}
                   {n.migration && <span className="text-xs" style={{ color: '#805ad5' }}>↗</span>}
+                  {onAskAgent && repoUrl && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onAskAgent({
+                          type: 'commit',
+                          repoUrl,
+                          filePath: data.file_path,
+                          commitHash: n.commit_hash,
+                          commitMessage: n.message,
+                          functionName: func?.name,
+                          summary: n.summary,
+                        })
+                      }}
+                      className="ml-auto px-1.5 py-0.5 rounded text-[11px] transition-colors"
+                      style={{ color: 'var(--color-accent)', opacity: 0.6 }}
+                      onMouseEnter={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.background = 'var(--color-surface-alt)' }}
+                      onMouseLeave={e => { e.currentTarget.style.opacity = '0.6'; e.currentTarget.style.background = 'transparent' }}
+                    >
+                      问
+                    </button>
+                  )}
                 </div>
                 <div className="text-xs ml-5 leading-snug truncate" style={{ color: 'var(--color-text)' }}>
                   {func ? `${func.name} 变更` : (n.summary || n.message?.split('\n')[0] || '')}
@@ -100,7 +122,7 @@ function Timeline({ data }) {
 
         {/* 详情面板 */}
         <div className="flex-1 overflow-y-auto bg-[var(--color-surface)]">
-          <DetailPanel node={selected || nodes[0]} isFunctionMode={isFunctionMode} />
+          <DetailPanel node={selected || nodes[0]} isFunctionMode={isFunctionMode} onAskAgent={onAskAgent} repoUrl={repoUrl} filePath={data.file_path} />
         </div>
       </div>
     </div>

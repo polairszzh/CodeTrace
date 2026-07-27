@@ -1,4 +1,4 @@
-function DetailPanel({ node, isFunctionMode }) {
+function DetailPanel({ node, isFunctionMode, onAskAgent, repoUrl, filePath }) {
   if (!node) {
     return (
       <div className="flex items-center justify-center h-full text-sm"
@@ -30,6 +30,28 @@ function DetailPanel({ node, isFunctionMode }) {
               style={{ background: (typeColors[changeType] || '#718096') + '22', color: typeColors[changeType] || '#718096' }}>
               {changeType}
             </span>
+          )}
+          {onAskAgent && repoUrl && node.commit_hash && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                onAskAgent({
+                  type: 'commit',
+                  repoUrl,
+                  filePath: filePath || null,
+                  commitHash: node.commit_hash,
+                  commitMessage: node.message,
+                  functionName: func?.name,
+                  summary: node.summary,
+                })
+              }}
+              className="ml-auto px-2 py-0.5 rounded text-xs transition-colors"
+              style={{ color: 'var(--color-accent)' }}
+              onMouseEnter={e => { e.currentTarget.style.background = 'var(--color-surface-alt)' }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
+            >
+              🤖 问 Agent
+            </button>
           )}
         </div>
         <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>

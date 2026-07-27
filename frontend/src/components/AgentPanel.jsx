@@ -5,8 +5,8 @@ import RepoInput from './RepoInput'
 import CouplingGraph from './CouplingGraph'
 import ModuleErosion from './ModuleErosion'
 
-function AgentPanel() {
-  const [repoUrl, setRepoUrl] = useState('')
+function AgentPanel({ initialRepo }) {
+  const [repoUrl, setRepoUrl] = useState(initialRepo || '')
   const [goal, setGoal] = useState('')
   const [running, setRunning] = useState(false)
   const [finalReport, setFinalReport] = useState(null)

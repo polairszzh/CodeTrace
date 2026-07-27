@@ -65,7 +65,6 @@ SYSTEM_PROMPT = """你是一个代码仓库分析 Agent。你的任务是使用�
 
 def build_agent(registry: ToolRegistry, llm: LLMService | None = None):
     """构建 LangGraph StateGraph"""
-
     if llm is None:
         llm = LLMService(
             api_key=os.getenv("LLM_API_KEY", ""),
@@ -106,17 +105,17 @@ def build_agent(registry: ToolRegistry, llm: LLMService | None = None):
             placeholder_patterns = ["已收集", "足够的信息", "可以输出", "now i can", "i've gathered", "i have collected"]
             is_placeholder = len(content) < 80 or any(p in content.lower() for p in placeholder_patterns)
             if is_placeholder:
-                # 追加拒绝消息，重新调一次 LLM
-                retry_messages = new_messages + [{
+                # 占位文本不入历史，直接追加重试指令
+                retry_messages = state["messages"] + [{
                     "role": "user",
                     "content": "不要输出占位文本，直接按要求的 Markdown 格式输出完整的分析报告。开始写正文。"
                 }]
                 retry = llm._call_with_tools(retry_messages, tools_schemas)
                 retry_tool_calls = retry.get("tool_calls")
                 retry_content = retry.get("content", "").strip()
-                # 重试后如果还是占位或无内容，只能 fallthrough 到 summarize
                 if not retry_tool_calls and (not retry_content or len(retry_content) < 80):
-                    updates["messages"] = new_messages  # 不追加重试记录，让 summarize 兜底
+                    # 重试失败，让 summarize 兜底（不含占位消息）
+                    updates["messages"] = state["messages"]
                 elif retry_tool_calls:
                     retry_asst = {"role": "assistant", "content": retry_content or None, "tool_calls": retry_tool_calls}
                     updates["messages"] = retry_messages + [retry_asst]
@@ -246,6 +245,7 @@ def run_agent(
     goal: str,
     repo_url: str = "",
     max_steps: int = 15,
+    system_prompt: str | None = None,
 ) -> dict:
     """
     运行 LangGraph Agent。
@@ -255,10 +255,12 @@ def run_agent(
         goal: 分析目标描述。
         repo_url: 仓库 URL（可选）。
         max_steps: 最大步数。
+        system_prompt: 自定义系统提示词，默认使用内置的。
 
     Returns:
         dict: {steps, findings, final_report, step_count, error}
     """
+    effective_prompt = system_prompt or SYSTEM_PROMPT
     app = build_agent(registry)
 
     initial: AgentState = {
@@ -269,7 +271,7 @@ def run_agent(
         "max_steps": max_steps,
         "error": None,
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": effective_prompt},
             {
                 "role": "user",
                 "content": f"目标：{goal}"
@@ -288,3 +290,75 @@ def run_agent(
         "step_count": result.get("step_count", 0),
         "error": result.get("error"),
     }
+
+
+async def run_agent_stream(
+    registry: ToolRegistry,
+    goal: str,
+    repo_url: str = "",
+    max_steps: int = 3,
+    system_prompt: str | None = None,
+):
+    """
+    流式运行 Agent，逐步 yield 中间状态事件。
+
+    产出事件格式:
+      {"type": "thinking", "step": N}             — 正在思考
+      {"type": "tool", "name": "...", "step": N}  — 调用工具
+      {"type": "report", "content": "..."}        — 最终报告（分段）
+      {"type": "done"}                             — 完成
+    """
+    effective_prompt = system_prompt or SYSTEM_PROMPT
+    app = build_agent(registry)
+
+    initial: AgentState = {
+        "goal": goal,
+        "repo_url": repo_url,
+        "findings": [],
+        "step_count": 0,
+        "max_steps": max_steps,
+        "error": None,
+        "messages": [
+            {"role": "system", "content": effective_prompt},
+            {
+                "role": "user",
+                "content": f"目标：{goal}"
+                           + (f"\n仓库 URL：{repo_url}" if repo_url else ""),
+            },
+        ],
+        "final_report": None,
+    }
+
+    yield {"type": "thinking", "step": 0}
+    _report_sent = False
+
+    async for event in app.astream(initial, stream_mode="updates"):
+        for node_name, output in event.items():
+            if node_name == "plan":
+                step = output.get("step_count", 0)
+                if output.get("final_report") and not _report_sent:
+                    _report_sent = True
+                    report = output["final_report"]
+                    CHUNK = 50
+                    for i in range(0, len(report), CHUNK):
+                        yield {"type": "report", "content": report[i:i + CHUNK]}
+                elif output.get("step_count"):
+                    last = output.get("messages", [])[-1] if output.get("messages") else {}
+                    tool_calls = last.get("tool_calls", [])
+                    if tool_calls:
+                        names = [tc["function"]["name"] for tc in tool_calls]
+                        yield {"type": "tool", "name": ", ".join(names), "step": step}
+                    else:
+                        yield {"type": "thinking", "step": step}
+            elif node_name == "execute":
+                yield {"type": "thinking", "step": 0}
+            elif node_name == "summarize":
+                if not _report_sent:
+                    report = output.get("final_report", "")
+                    if report:
+                        _report_sent = True
+                        CHUNK = 50
+                        for i in range(0, len(report), CHUNK):
+                            yield {"type": "report", "content": report[i:i + CHUNK]}
+
+    yield {"type": "done"}
