@@ -120,3 +120,12 @@ body {
   color: var(--color-accent);
   text-decoration: underline;
 }
+
+/* ── Inline Agent Panel ────────────────────────────── */
+@keyframes inlane-slide-in {
+  from { transform: translateX(100%); }
+  to   { transform: translateX(0); }
+}
+.inlane-agent-panel {
+  animation: inlane-slide-in 0.2s ease-out;
+}

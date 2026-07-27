@@ -6,7 +6,7 @@ const RISK_COLORS = {
   low: { dot: '#38a169', bg: 'rgba(56,161,105,0.08)' },
 }
 
-function FileTree({ repoUrl, onFileSelect }) {
+function FileTree({ repoUrl, onFileSelect, onAskAgent }) {
   const [tree, setTree] = useState(null)
   const [expanded, setExpanded] = useState({})
   const [loading, setLoading] = useState(false)
@@ -98,6 +98,7 @@ function FileTree({ repoUrl, onFileSelect }) {
           expanded={expanded}
           onToggle={loadChildren}
           onSelect={onFileSelect}
+          onAskAgent={onAskAgent}
           risks={risks}
           dirCache={dirCache}
         />
@@ -106,7 +107,8 @@ function FileTree({ repoUrl, onFileSelect }) {
   )
 }
 
-function FileTreeNode({ entry, repoUrl, expanded, onToggle, onSelect, risks, dirCache, depth = 0 }) {
+function FileTreeNode({ entry, repoUrl, expanded, onToggle, onSelect, onAskAgent, risks, dirCache, depth = 0 }) {
+  const [hovered, setHovered] = useState(false)
   const isDir = entry.type === 'dir' || entry.type === 'directory' || !entry.type
   const indent = depth * 14
   const filePath = entry.path || entry.name
@@ -126,13 +128,13 @@ function FileTreeNode({ entry, repoUrl, expanded, onToggle, onSelect, risks, dir
     <div>
       <div
         onClick={handleClick}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
         className="flex items-center gap-1.5 py-1 px-2 rounded cursor-pointer transition-colors whitespace-nowrap"
         style={{
           paddingLeft: `${8 + indent}px`,
           background: color && !isDir ? color.bg : 'transparent',
         }}
-        onMouseEnter={e => { if (!isDir) e.currentTarget.style.background = color?.bg || 'var(--color-surface-alt)' }}
-        onMouseLeave={e => { if (!isDir) e.currentTarget.style.background = color?.bg || 'transparent' }}
       >
         {!isDir && risk && (
           <span
@@ -147,7 +149,7 @@ function FileTreeNode({ entry, repoUrl, expanded, onToggle, onSelect, risks, dir
           <span className="flex-shrink-0">{expanded[filePath] ? '📂' : '📁'}</span>
         )}
         <span
-          className="truncate"
+          className="truncate flex-1"
           style={{
             color: risk === 'high' ? '#e53e3e' : 'var(--color-text)',
             fontWeight: risk === 'high' ? 600 : 400,
@@ -155,6 +157,20 @@ function FileTreeNode({ entry, repoUrl, expanded, onToggle, onSelect, risks, dir
         >
           {entry.name}
         </span>
+        {!isDir && hovered && onAskAgent && repoUrl && (
+          <span
+            onClick={(e) => {
+              e.stopPropagation()
+              onAskAgent({ type: 'file', repoUrl, filePath })
+            }}
+            className="px-1 rounded text-[11px] cursor-pointer flex-shrink-0"
+            style={{ color: 'var(--color-accent)' }}
+            onMouseEnter={e => { e.currentTarget.style.background = 'var(--color-surface-alt)' }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
+          >
+            🤖
+          </span>
+        )}
         {!isDir && risk && risk !== 'low' && (
           <span
             className="text-[10px] px-1 rounded flex-shrink-0 ml-auto"
@@ -174,6 +190,7 @@ function FileTreeNode({ entry, repoUrl, expanded, onToggle, onSelect, risks, dir
           expanded={expanded}
           onToggle={onToggle}
           onSelect={onSelect}
+          onAskAgent={onAskAgent}
           risks={risks}
           depth={depth + 1}
           dirCache={dirCache}
@@ -183,7 +200,7 @@ function FileTreeNode({ entry, repoUrl, expanded, onToggle, onSelect, risks, dir
   )
 }
 
-function DirChildren({ path, repoUrl, expanded, onToggle, onSelect, risks, depth, dirCache }) {
+function DirChildren({ path, repoUrl, expanded, onToggle, onSelect, onAskAgent, risks, depth, dirCache }) {
   const children = dirCache[path]
 
   if (!children) {
@@ -198,6 +215,7 @@ function DirChildren({ path, repoUrl, expanded, onToggle, onSelect, risks, depth
       expanded={expanded}
       onToggle={onToggle}
       onSelect={onSelect}
+      onAskAgent={onAskAgent}
       risks={risks}
       depth={depth}
       dirCache={dirCache}

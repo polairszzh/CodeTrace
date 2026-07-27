@@ -224,6 +224,51 @@ def get_commit_diff_stats(repo_path: Path, commit_hash: str) -> dict:
         "files_changed": files_changed,
     }
 
+def get_commit_diff_content(repo_path: Path, commit_hash: str, max_size: int = 15000) -> dict:
+    """
+    获取指定提交的完整 diff 文本（patch）。
+
+    Args:
+        repo_path: 仓库路径。
+        commit_hash: 提交哈希。
+        max_size: diff 文本最大长度，超长截断。
+
+    Returns:
+        dict: {"patch": str, "files_changed": [str], "additions": int, "deletions": int}
+    """
+    result = subprocess.run(
+        ["git", "show", "--format=", commit_hash],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=15,
+    )
+
+    patch = result.stdout.strip()
+    truncated = len(patch) > max_size
+    if truncated:
+        patch = patch[:max_size] + "\n... (diff 过长已截断)"
+
+    # 变更文件列表
+    files = []
+    for line in patch.split("\n"):
+        if line.startswith("diff --git"):
+            parts = line.split()
+            if len(parts) >= 3:
+                files.append(parts[2].removeprefix("a/"))
+
+    # 通过 --stat 拿精确统计
+    stat = get_commit_diff_stats(repo_path, commit_hash)
+
+    return {
+        "patch": patch,
+        "files_changed": files,
+        "additions": stat["additions"],
+        "deletions": stat["deletions"],
+        "truncated": truncated,
+    }
+
 def get_file_content_at_commit(repo_path: Path, commit_hash: str, file_path: str) -> str:
     """
     获取指定提交中某个文件的内容。
