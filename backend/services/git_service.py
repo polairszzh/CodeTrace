@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -99,8 +100,14 @@ def _request_index_background(repo_path: Path):
 
 def repo_path_for_url(repo_url: str) -> Path:
     """从 URL 推导本地缓存路径（不 clone、不触网）。"""
-    repo_name = repo_url.rstrip("/").split("/")[-1].replace(".git", "")
-    return CACHE_DIR / repo_name
+    return CACHE_DIR / repo_name_for_url(repo_url)
+
+
+def repo_name_for_url(repo_url: str) -> str:
+    """从 URL 提取安全仓库名（防目录穿越：'..'/'.'/特殊字符一律清洗）。"""
+    raw = repo_url.rstrip("/").split("/")[-1].replace(".git", "")
+    name = re.sub(r"[^A-Za-z0-9_.-]", "_", raw)
+    return name if name not in ("", ".", "..") else "_"
 
 
 def _repo_size_kb(repo_url: str) -> int | None:
@@ -169,7 +176,7 @@ def clone_or_pull_repo(repo_url: str) -> Path:
     Returns:
         Path: The path to the cloned or updated repository.
     """
-    repo_name = repo_url.rstrip("/").split("/")[-1].replace(".git", "")
+    repo_name = repo_name_for_url(repo_url)
     repo_path = repo_path_for_url(repo_url)
 
     # 内存缓存命中（60s TTL），避免重复网络请求

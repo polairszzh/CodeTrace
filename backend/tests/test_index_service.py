@@ -327,6 +327,19 @@ def test_should_full_clone_decision(monkeypatch):
     assert git_service._should_full_clone("https://github.com/owner/repo.git") is False
 
 
+def test_repo_path_sanitized(tmp_path, monkeypatch):
+    """URL 末段清洗：'..'/'.'/空名不会逃逸缓存目录，锁名同源。"""
+    monkeypatch.setattr(git_service, "CACHE_DIR", tmp_path / "cache")
+    assert git_service.repo_name_for_url("https://github.com/o/..") == "_"
+    assert git_service.repo_name_for_url("https://github.com/o/.") == "_"
+    assert git_service.repo_name_for_url("https://github.com/o/") == "o"
+    assert git_service.repo_name_for_url("https://github.com/o/repo.git") == "repo"
+
+    p = git_service.repo_path_for_url("https://github.com/o/..")
+    assert p == git_service.CACHE_DIR / "_"
+    assert p.resolve().is_relative_to(git_service.CACHE_DIR.resolve())
+
+
 def test_repo_size_cached(monkeypatch):
     """仓库体积结果缓存：重复查询不重复打 GitHub API。"""
     monkeypatch.setenv("GITHUB_TOKEN", "")

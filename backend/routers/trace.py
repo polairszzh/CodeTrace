@@ -108,7 +108,9 @@ async def trace_function(req: TraceRequest, function_name: str = ""):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"仓库操作失败：{str(e)}")
 
-    result = trace_function_across_commits(repo_path, req.file_path, function_name)
+    result = await asyncio.to_thread(
+        trace_function_across_commits, repo_path, req.file_path, function_name
+    )
     history = result["history"]
     migration_path = result.get("migration_path", [])
 
@@ -145,7 +147,9 @@ async def trace_class(req: TraceRequest, class_name: str = ""):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"仓库操作失败：{str(e)}")
 
-    result = trace_class_across_commits(repo_path, req.file_path, class_name)
+    result = await asyncio.to_thread(
+        trace_class_across_commits, repo_path, req.file_path, class_name
+    )
     history = result["history"]
     migration_path = result.get("migration_path", [])
 
