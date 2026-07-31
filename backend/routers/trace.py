@@ -2,6 +2,7 @@ import json
 import os
 import asyncio
 import time
+from typing import Optional
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -27,7 +28,9 @@ llm = LLMService(
 )
 
 
-def _build_file_timeline(repo_path, repo_full: str, file_path: str) -> "TraceResponse":
+def _build_file_timeline(
+    repo_path, repo_full: str, file_path: str
+) -> Optional["TraceResponse"]:
     """同步构建文件时间线（在 to_thread 中执行，避免阻塞事件循环）。"""
     commits = get_file_commits(repo_path, file_path)
     if not commits:
@@ -265,7 +268,7 @@ async def repo_files(repo_url: str, path: str = ""):
         raise HTTPException(status_code=500, detail=f"仓库操作失败：{str(e)}")
 
     try:
-        files = list_files_at_commit(repo_path, "HEAD")
+        files = await asyncio.to_thread(list_files_at_commit, repo_path, "HEAD")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"文件列表获取失败：{str(e)}")
 
@@ -314,11 +317,11 @@ async def repo_symbols(repo_url: str, file_path: str):
             pass
 
     try:
-        content = get_file_content_at_commit(repo_path, "HEAD", file_path)
+        content = await asyncio.to_thread(get_file_content_at_commit, repo_path, "HEAD", file_path)
     except Exception as e:
         raise HTTPException(status_code=404, detail=f"文件获取失败：{str(e)}")
 
-    return extract_symbols_fast(content, file_path)
+    return await asyncio.to_thread(extract_symbols_fast, content, file_path)
 
 
 @router.get("/repo/file-risks")
@@ -330,7 +333,7 @@ async def repo_file_risks(repo_url: str):
         raise HTTPException(status_code=500, detail=f"仓库操作失败：{str(e)}")
 
     try:
-        counts = get_file_commit_counts(repo_path)
+        counts = await asyncio.to_thread(get_file_commit_counts, repo_path)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"风险分析失败：{str(e)}")
 
@@ -363,11 +366,11 @@ async def repo_dashboard(repo_url: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"仓库操作失败：{str(e)}")
 
-    summary = get_repo_summary(repo_path)
+    summary = await asyncio.to_thread(get_repo_summary, repo_path)
 
     # Risk distribution
     try:
-        counts = get_file_commit_counts(repo_path)
+        counts = await asyncio.to_thread(get_file_commit_counts, repo_path)
         values = sorted(counts.values())
         n = len(values)
         p80 = values[int(n * 0.8)] if n > 5 else 0
