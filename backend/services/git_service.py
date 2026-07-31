@@ -9,6 +9,8 @@ from services import index_service
 
 CACHE_DIR = Path(os.getenv("CODETRACE_CACHE", "/tmp/codetrace"))
 _CLONE_THRESHOLD_DEFAULT_KB = 1024 * 1024  # 1GB
+_SIZE_CACHE: dict[str, tuple[int | None, float]] = {}
+_SIZE_CACHE_TTL = 3600  # 秒
 
 # 内存缓存：repo_url → (repo_path, timestamp)
 _cache = {}
@@ -87,6 +89,8 @@ def _remote_head(repo_url: str) -> str | None:
 def _request_index_background(repo_path: Path):
     """后台异步补索引（不阻塞请求路径；失败静默，查询走 git 回退）。"""
     try:
+        if index_service.index_fresh(repo_path):
+            return  # 已新鲜，避免每个请求都开线程
         index_service.request_index_build(repo_path)
     except Exception:
         pass
@@ -103,6 +107,9 @@ def _repo_size_kb(repo_url: str) -> int | None:
     try:
         if "github.com" not in repo_url:
             return None
+        cached = _SIZE_CACHE.get(repo_url)
+        if cached and time.time() - cached[1] < _SIZE_CACHE_TTL:
+            return cached[0]
         parts = repo_url.rstrip("/").split("/")
         if len(parts) < 2:
             return None
@@ -117,7 +124,9 @@ def _repo_size_kb(repo_url: str) -> int | None:
         )
         resp.raise_for_status()
         size = resp.json().get("size")
-        return int(size) if size else None
+        size_kb = int(size) if size else None
+        _SIZE_CACHE[repo_url] = (size_kb, time.time())
+        return size_kb
     except Exception:
         return None
 
@@ -181,9 +190,19 @@ def clone_or_pull_repo(repo_url: str) -> Path:
             if not full_clone:
                 clone_args.append("--depth=500")
             clone_args += [repo_url, str(repo_path)]
-            subprocess.run(
-                clone_args, check=True, timeout=600 if full_clone else 120,
-            )
+            try:
+                subprocess.run(
+                    clone_args, check=True, timeout=600 if full_clone else 120,
+                )
+            except subprocess.TimeoutExpired:
+                # 超时：清掉半成品，降级浅克隆
+                import shutil
+                if repo_path.parent == CACHE_DIR:
+                    shutil.rmtree(repo_path, ignore_errors=True)
+                subprocess.run(
+                    ["git", "clone", "--depth=500", repo_url, str(repo_path)],
+                    check=True, timeout=600,
+                )
         finally:
             if locked:
                 _release_lock(repo_name)

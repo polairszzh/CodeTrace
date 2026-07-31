@@ -379,6 +379,11 @@ async def repo_index_status(repo_url: str):
 
     async def event_stream():
         repo_path = repo_path_for_url(repo_url)
+        if not repo_path.exists():
+            # 仓库尚未克隆，无索引任务可等
+            yield f"data: {json.dumps({'repo': repo_url, 'fresh': False, 'status': 'not_found', 'message': '仓库尚未克隆'}, ensure_ascii=False)}\n\n"
+            yield "data: [DONE]\n\n"
+            return
         deadline = time.time() + 300
         while True:
             status = get_index_status(repo_path)
