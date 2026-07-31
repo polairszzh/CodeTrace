@@ -448,6 +448,28 @@ def test_index_status_sse_not_cloned(tmp_path, monkeypatch):
     assert "[DONE]" in body
 
 
+def test_index_status_sse_not_started(local_repo, monkeypatch):
+    """仓库存在但索引未启动：SSE 返回 not_started 立即结束，不空转 300s。"""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from routers.trace import router
+
+    monkeypatch.setattr(git_service, "CACHE_DIR", local_repo.parent)
+    index_service._FRESH_CACHE.clear()
+    app = FastAPI()
+    app.include_router(router, prefix="/api")
+    client = TestClient(app)
+
+    resp = client.get(
+        "/api/repo/index-status?repo_url=https://github.com/owner/repo.git",
+        timeout=15,
+    )
+    assert resp.status_code == 200
+    body = resp.text
+    assert "not_started" in body
+    assert "[DONE]" in body
+
+
 def test_ensure_indexed_non_repo(tmp_path):
     assert index_service.ensure_indexed(tmp_path / "nope") is False
     plain_dir = tmp_path / "plain"

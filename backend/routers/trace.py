@@ -388,6 +388,15 @@ async def repo_index_status(repo_url: str):
         while True:
             status = get_index_status(repo_path)
             fresh = index_fresh(repo_path)
+            if status is None:
+                # 索引尚未启动：给后台线程写初始状态一点时间，仍无则视为未开始直接结束
+                await asyncio.sleep(2)
+                status = get_index_status(repo_path)
+                fresh = index_fresh(repo_path)
+                if status is None and not fresh:
+                    yield f"data: {json.dumps({'repo': repo_url, 'fresh': False, 'status': 'not_started', 'message': '索引尚未启动'}, ensure_ascii=False)}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
             payload = {"repo": repo_url, "fresh": fresh}
             if status:
                 payload.update(status)
