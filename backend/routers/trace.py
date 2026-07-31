@@ -1,15 +1,17 @@
 import json
 import os
 import asyncio
+import time
+from typing import Optional
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from models.schemas import TraceRequest, TraceResponse, TimelineNode, DiffStats
-from services.git_service import clone_or_pull_repo, get_file_commits, get_commit_diff_stats, list_files_at_commit, get_file_content_at_commit, get_file_commit_counts, get_repo_summary
+from services.git_service import clone_or_pull_repo, repo_path_for_url, get_file_commits, get_commit_diff_stats, list_files_at_commit, get_file_content_at_commit, get_file_commit_counts, get_repo_summary
 from services.github_service import GitHubClient
 from services.llm_service import LLMService
 from services.ast_service import trace_function_across_commits, trace_class_across_commits, extract_symbols_fast
-from services.index_service import get_symbols as index_get_symbols, index_fresh
+from services.index_service import get_symbols as index_get_symbols, index_fresh, get_index_status
 from services.agent import registry
 from services.agent.planner import AgentPlanner
 from services.agent.graph import run_agent, run_agent_stream
@@ -24,6 +26,50 @@ llm = LLMService(
     base_url=os.getenv("LLM_BASE_URL", "https://api.deepseek.com/v1"),
     model=os.getenv("LLM_MODEL", "deepseek-v4-pro")
 )
+
+
+def _build_file_timeline(
+    repo_path, repo_full: str, file_path: str
+) -> Optional["TraceResponse"]:
+    """同步构建文件时间线（在 to_thread 中执行，避免阻塞事件循环）。"""
+    commits = get_file_commits(repo_path, file_path)
+    if not commits:
+        return None  # 无历史由路由层抛 404，避免依赖线程异常传播
+
+    timeline = []
+    for c in commits:
+        pr_number = github.extract_pr_number(c["message"])
+        pr_info = None
+        if pr_number:
+            pr_info = github.get_pr_info(repo_full, pr_number)
+
+        diff_stats = get_commit_diff_stats(repo_path, c["hash"])
+        llm_result = llm.classify_and_summarize(
+            commit_message=c["message"],
+            pr_title=pr_info.get("title") if pr_info else None,
+            pr_description=pr_info.get("body") if pr_info else None,
+        )
+
+        node = TimelineNode(
+            commit_hash=c["hash"],
+            author=c["author"],
+            date=c["date"],
+            message=c["message"],
+            pr_number=pr_number,
+            pr_title=pr_info.get("title") if pr_info else None,
+            change_type=llm_result.get("change_type", "chore"),
+            summary=llm_result.get("summary", c["message"][:50]),
+            diff_stats=DiffStats(**diff_stats),
+        )
+        timeline.append(node)
+
+    return TraceResponse(
+        repo=repo_full,
+        file_path=file_path,
+        timeline=timeline,
+        commit_count=len(timeline),
+    )
+
 
 @router.post("/trace", response_model=TraceResponse)
 async def trace_file(req: TraceRequest):
@@ -46,49 +92,15 @@ async def trace_file(req: TraceRequest):
     
     # 2. clone/pull 仓库
     try:
-        repo_path = clone_or_pull_repo(req.repo_url)
+        repo_path = await asyncio.to_thread(clone_or_pull_repo, req.repo_url)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"仓库操作失败: {str(e)}")
-    
-    # 3. 获取文件 commit 历史
-    commits = get_file_commits(repo_path, req.file_path)
-    if not commits:
+
+    # 3-4. 构建 timeline（同步 IO + LLM，放线程池执行）
+    result = await asyncio.to_thread(_build_file_timeline, repo_path, repo_full, req.file_path)
+    if result is None:
         raise HTTPException(status_code=404, detail="该文件无变更历史")
-    
-    # 4. 构建 timeline
-    timeline = []
-    for c in commits:
-        pr_number = github.extract_pr_number(c["message"])
-        pr_info = None
-        if pr_number:
-            pr_info = github.get_pr_info(repo_full, pr_number)
-        
-        diff_stats = get_commit_diff_stats(repo_path, c["hash"])
-        llm_result = llm.classify_and_summarize(
-            commit_message=c["message"],
-            pr_title=pr_info.get("title") if pr_info else None,
-            pr_description=pr_info.get("body") if pr_info else None
-        )
-
-        node = TimelineNode(
-            commit_hash=c["hash"],
-            author=c["author"],
-            date=c["date"],
-            message=c["message"],
-            pr_number=pr_number,
-            pr_title=pr_info.get("title") if pr_info else None,
-            change_type=llm_result.get("change_type", "chore"),
-            summary=llm_result.get("summary", c["message"][:50]),
-            diff_stats=DiffStats(**diff_stats)
-        )
-        timeline.append(node)
-
-    return TraceResponse(
-        repo=repo_full,
-        file_path=req.file_path,
-        timeline=timeline,
-        commit_count=len(timeline),
-    )
+    return result
 
 @router.post("/trace/function")
 async def trace_function(req: TraceRequest, function_name: str = ""):
@@ -103,11 +115,13 @@ async def trace_function(req: TraceRequest, function_name: str = ""):
         raise HTTPException(status_code=400, detail="仓库地址格式有误")
     
     try:
-        repo_path = clone_or_pull_repo(req.repo_url)
+        repo_path = await asyncio.to_thread(clone_or_pull_repo, req.repo_url)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"仓库操作失败：{str(e)}")
-    
-    result = trace_function_across_commits(repo_path, req.file_path, function_name)
+
+    result = await asyncio.to_thread(
+        trace_function_across_commits, repo_path, req.file_path, function_name
+    )
     history = result["history"]
     migration_path = result.get("migration_path", [])
 
@@ -140,11 +154,13 @@ async def trace_class(req: TraceRequest, class_name: str = ""):
         raise HTTPException(status_code=400, detail="仓库地址格式有误")
 
     try:
-        repo_path = clone_or_pull_repo(req.repo_url)
+        repo_path = await asyncio.to_thread(clone_or_pull_repo, req.repo_url)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"仓库操作失败：{str(e)}")
 
-    result = trace_class_across_commits(repo_path, req.file_path, class_name)
+    result = await asyncio.to_thread(
+        trace_class_across_commits, repo_path, req.file_path, class_name
+    )
     history = result["history"]
     migration_path = result.get("migration_path", [])
 
@@ -194,7 +210,7 @@ async def graph_analyze(req: TraceRequest, goal: str = ""):
         goal = f"分析仓库 {req.repo_url}, 找出变更频繁的文件，对关键函数做深度追溯，输出项目活跃度报告"
 
     try:
-        clone_or_pull_repo(req.repo_url)
+        await asyncio.to_thread(clone_or_pull_repo, req.repo_url)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"仓库操作失败：{str(e)}")
 
@@ -247,12 +263,12 @@ async def graph_analyze(req: TraceRequest, goal: str = ""):
 async def repo_files(repo_url: str, path: str = ""):
     """返回仓库目录结构。无 path 时返回顶层，有 path 时返回该路径下的子节点。"""
     try:
-        repo_path = clone_or_pull_repo(repo_url)
+        repo_path = await asyncio.to_thread(clone_or_pull_repo, repo_url)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"仓库操作失败：{str(e)}")
 
     try:
-        files = list_files_at_commit(repo_path, "HEAD")
+        files = await asyncio.to_thread(list_files_at_commit, repo_path, "HEAD")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"文件列表获取失败：{str(e)}")
 
@@ -287,7 +303,7 @@ async def repo_files(repo_url: str, path: str = ""):
 async def repo_symbols(repo_url: str, file_path: str):
     """返回指定文件当前 HEAD 的所有函数名和 class 名（使用轻量提取器）。"""
     try:
-        repo_path = clone_or_pull_repo(repo_url)
+        repo_path = await asyncio.to_thread(clone_or_pull_repo, repo_url)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"仓库操作失败：{str(e)}")
 
@@ -301,23 +317,23 @@ async def repo_symbols(repo_url: str, file_path: str):
             pass
 
     try:
-        content = get_file_content_at_commit(repo_path, "HEAD", file_path)
+        content = await asyncio.to_thread(get_file_content_at_commit, repo_path, "HEAD", file_path)
     except Exception as e:
         raise HTTPException(status_code=404, detail=f"文件获取失败：{str(e)}")
 
-    return extract_symbols_fast(content, file_path)
+    return await asyncio.to_thread(extract_symbols_fast, content, file_path)
 
 
 @router.get("/repo/file-risks")
 async def repo_file_risks(repo_url: str):
     """轻量：返回每个文件的风险等级，用于文件树着色。"""
     try:
-        repo_path = clone_or_pull_repo(repo_url)
+        repo_path = await asyncio.to_thread(clone_or_pull_repo, repo_url)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"仓库操作失败：{str(e)}")
 
     try:
-        counts = get_file_commit_counts(repo_path)
+        counts = await asyncio.to_thread(get_file_commit_counts, repo_path)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"风险分析失败：{str(e)}")
 
@@ -346,15 +362,15 @@ async def repo_file_risks(repo_url: str):
 async def repo_dashboard(repo_url: str):
     """仓库仪表盘数据：概要统计 + 风险分布 + 近期活动。"""
     try:
-        repo_path = clone_or_pull_repo(repo_url)
+        repo_path = await asyncio.to_thread(clone_or_pull_repo, repo_url)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"仓库操作失败：{str(e)}")
 
-    summary = get_repo_summary(repo_path)
+    summary = await asyncio.to_thread(get_repo_summary, repo_path)
 
     # Risk distribution
     try:
-        counts = get_file_commit_counts(repo_path)
+        counts = await asyncio.to_thread(get_file_commit_counts, repo_path)
         values = sorted(counts.values())
         n = len(values)
         p80 = values[int(n * 0.8)] if n > 5 else 0
@@ -370,6 +386,56 @@ async def repo_dashboard(repo_url: str):
         "summary": summary,
         "risk_distribution": risk_dist,
     }
+
+
+@router.get("/repo/index-status")
+async def repo_index_status(repo_url: str):
+    """SSE：仓库索引构建进度（排队/扫描/文件/符号/完成/失败）。"""
+
+    async def event_stream():
+        repo_path = repo_path_for_url(repo_url)
+        if not repo_path.exists():
+            # 仓库尚未克隆，无索引任务可等
+            yield f"data: {json.dumps({'repo': repo_url, 'fresh': False, 'status': 'not_found', 'message': '仓库尚未克隆'}, ensure_ascii=False)}\n\n"
+            yield "data: [DONE]\n\n"
+            return
+        deadline = time.time() + 300
+        not_started_deadline = time.time() + 15
+        while True:
+            status = get_index_status(repo_path)
+            fresh = index_fresh(repo_path)
+            if status is None:
+                # 索引尚未启动：给后台线程写初始状态留出窗口，超时仍无则视为未开始结束
+                while (
+                    status is None
+                    and not fresh
+                    and time.time() < not_started_deadline
+                ):
+                    await asyncio.sleep(2)
+                    status = get_index_status(repo_path)
+                    fresh = index_fresh(repo_path)
+                if status is None and not fresh:
+                    yield f"data: {json.dumps({'repo': repo_url, 'fresh': False, 'status': 'not_started', 'message': '索引尚未启动'}, ensure_ascii=False)}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
+            payload = {"repo": repo_url, "fresh": fresh}
+            if status:
+                payload.update(status)
+            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+            if (
+                fresh
+                or (status and status.get("status") in ("done", "error"))
+                or time.time() > deadline
+            ):
+                break
+            await asyncio.sleep(1)
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # ── "问 Agent" 轻量入口 ──────────────────────────────────
@@ -418,7 +484,7 @@ async def agent_ask(req: AskRequest):
     goal = "\n".join(parts)
 
     try:
-        clone_or_pull_repo(req.repo_url)
+        await asyncio.to_thread(clone_or_pull_repo, req.repo_url)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"仓库操作失败: {str(e)}")
 
