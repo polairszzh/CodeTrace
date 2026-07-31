@@ -1,15 +1,16 @@
 import json
 import os
 import asyncio
+import time
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from models.schemas import TraceRequest, TraceResponse, TimelineNode, DiffStats
-from services.git_service import clone_or_pull_repo, get_file_commits, get_commit_diff_stats, list_files_at_commit, get_file_content_at_commit, get_file_commit_counts, get_repo_summary
+from services.git_service import clone_or_pull_repo, repo_path_for_url, get_file_commits, get_commit_diff_stats, list_files_at_commit, get_file_content_at_commit, get_file_commit_counts, get_repo_summary
 from services.github_service import GitHubClient
 from services.llm_service import LLMService
 from services.ast_service import trace_function_across_commits, trace_class_across_commits, extract_symbols_fast
-from services.index_service import get_symbols as index_get_symbols, index_fresh
+from services.index_service import get_symbols as index_get_symbols, index_fresh, get_index_status
 from services.agent import registry
 from services.agent.planner import AgentPlanner
 from services.agent.graph import run_agent, run_agent_stream
@@ -370,6 +371,32 @@ async def repo_dashboard(repo_url: str):
         "summary": summary,
         "risk_distribution": risk_dist,
     }
+
+
+@router.get("/repo/index-status")
+async def repo_index_status(repo_url: str):
+    """SSE：仓库索引构建进度（排队/扫描/文件/符号/完成/失败）。"""
+
+    async def event_stream():
+        repo_path = repo_path_for_url(repo_url)
+        deadline = time.time() + 300
+        while True:
+            status = get_index_status(repo_path)
+            fresh = index_fresh(repo_path)
+            payload = {"repo": repo_url, "fresh": fresh}
+            if status:
+                payload.update(status)
+            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+            if (
+                fresh
+                or (status and status.get("status") in ("done", "error"))
+                or time.time() > deadline
+            ):
+                break
+            await asyncio.sleep(1)
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 # ── "问 Agent" 轻量入口 ──────────────────────────────────

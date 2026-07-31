@@ -3,9 +3,12 @@ import subprocess
 import time
 from pathlib import Path
 
+import httpx
+
 from services import index_service
 
 CACHE_DIR = Path(os.getenv("CODETRACE_CACHE", "/tmp/codetrace"))
+_CLONE_THRESHOLD_DEFAULT_KB = 1024 * 1024  # 1GB
 
 # 内存缓存：repo_url → (repo_path, timestamp)
 _cache = {}
@@ -81,12 +84,65 @@ def _remote_head(repo_url: str) -> str | None:
         return None
 
 
-def _ensure_indexed_silent(repo_path: Path):
-    """补索引（失败静默，不阻塞主流程）。"""
+def _request_index_background(repo_path: Path):
+    """后台异步补索引（不阻塞请求路径；失败静默，查询走 git 回退）。"""
     try:
-        index_service.ensure_indexed(repo_path)
+        index_service.request_index_build(repo_path)
     except Exception:
         pass
+
+
+def repo_path_for_url(repo_url: str) -> Path:
+    """从 URL 推导本地缓存路径（不 clone、不触网）。"""
+    repo_name = repo_url.rstrip("/").split("/")[-1].replace(".git", "")
+    return CACHE_DIR / repo_name
+
+
+def _repo_size_kb(repo_url: str) -> int | None:
+    """GitHub API 查仓库体积（KB）。非 GitHub 或查询失败返回 None。"""
+    try:
+        if "github.com" not in repo_url:
+            return None
+        parts = repo_url.rstrip("/").split("/")
+        if len(parts) < 2:
+            return None
+        owner, name = parts[-2], parts[-1].replace(".git", "")
+        headers = {"Accept": "application/vnd.github+json"}
+        token = os.getenv("GITHUB_TOKEN", "")
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        resp = httpx.get(
+            f"https://api.github.com/repos/{owner}/{name}",
+            headers=headers, timeout=10,
+        )
+        resp.raise_for_status()
+        size = resp.json().get("size")
+        return int(size) if size else None
+    except Exception:
+        return None
+
+
+def _should_full_clone(repo_url: str) -> bool:
+    """体积 ≤ 阈值 → 全量 clone（完整历史，索引价值更高）；否则维持浅克隆。"""
+    try:
+        threshold_kb = int(
+            os.getenv("CODETRACE_CLONE_THRESHOLD_KB", str(_CLONE_THRESHOLD_DEFAULT_KB))
+        )
+    except ValueError:
+        threshold_kb = _CLONE_THRESHOLD_DEFAULT_KB
+    size_kb = _repo_size_kb(repo_url)
+    return size_kb is not None and size_kb <= threshold_kb
+
+
+def _is_shallow_repo(repo_path: Path) -> bool:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--is-shallow-repository"],
+            cwd=repo_path, capture_output=True, text=True, timeout=10,
+        )
+        return result.stdout.strip() == "true"
+    except Exception:
+        return False
 
 
 def clone_or_pull_repo(repo_url: str) -> Path:
@@ -103,7 +159,7 @@ def clone_or_pull_repo(repo_url: str) -> Path:
         Path: The path to the cloned or updated repository.
     """
     repo_name = repo_url.rstrip("/").split("/")[-1].replace(".git", "")
-    repo_path = CACHE_DIR / repo_name
+    repo_path = repo_path_for_url(repo_url)
 
     # 内存缓存命中（60s TTL），避免重复网络请求
     cached = _cache.get(repo_url)
@@ -120,14 +176,18 @@ def clone_or_pull_repo(repo_url: str) -> Path:
     if not repo_path.exists():
         locked = _acquire_lock(repo_name)
         try:
+            full_clone = _should_full_clone(repo_url)
+            clone_args = ["git", "clone"]
+            if not full_clone:
+                clone_args.append("--depth=500")
+            clone_args += [repo_url, str(repo_path)]
             subprocess.run(
-                ["git", "clone", "--depth=500", repo_url, str(repo_path)],
-                check=True, timeout=120,
+                clone_args, check=True, timeout=600 if full_clone else 120,
             )
         finally:
             if locked:
                 _release_lock(repo_name)
-        _ensure_indexed_silent(repo_path)
+        _request_index_background(repo_path)
         _cache[repo_url] = (repo_path, time.time())
         return repo_path
 
@@ -135,7 +195,7 @@ def clone_or_pull_repo(repo_url: str) -> Path:
     _cache[repo_url] = (repo_path, time.time())
     remote_hash = _remote_head(repo_url)
     if remote_hash is None:
-        _ensure_indexed_silent(repo_path)
+        _request_index_background(repo_path)
         return repo_path
 
     try:
@@ -148,15 +208,17 @@ def clone_or_pull_repo(repo_url: str) -> Path:
         local_hash = ""
 
     if local_hash == remote_hash:
-        _ensure_indexed_silent(repo_path)
+        _request_index_background(repo_path)
         return repo_path
 
     # 不一致 → pull（加锁防并发）
     locked = _acquire_lock(repo_name)
     try:
+        pull_args = ["git", "pull"]
+        if _is_shallow_repo(repo_path):
+            pull_args.append("--depth=500")
         subprocess.run(
-            ["git", "pull", "--depth=500"],
-            cwd=repo_path, check=True, timeout=60,
+            pull_args, cwd=repo_path, check=True, timeout=300,
         )
     except Exception:
         pass
@@ -164,7 +226,7 @@ def clone_or_pull_repo(repo_url: str) -> Path:
         if locked:
             _release_lock(repo_name)
 
-    _ensure_indexed_silent(repo_path)
+    _request_index_background(repo_path)
     return repo_path
 
 def get_file_commits(repo_path: Path, file_path: str) -> list[dict]:

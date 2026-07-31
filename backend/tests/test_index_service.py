@@ -3,6 +3,7 @@
 import datetime
 import os
 import subprocess
+import time
 
 import pytest
 
@@ -265,6 +266,86 @@ def test_pr_cache_roundtrip(local_repo):
     cached = index_service.get_cached_pr("owner/repo", 42)
     assert cached == {"title": "t", "state": "open"}
     assert index_service.get_cached_pr("owner/repo", 99) is None
+
+
+def test_request_index_build_background(local_repo):
+    """后台异步建索引：触发后不阻塞，最终完成并写入状态。"""
+    index_service._FRESH_CACHE.clear()
+    assert index_service.request_index_build(local_repo) is True
+
+    deadline = time.time() + 20
+    status = None
+    while time.time() < deadline:
+        status = index_service.get_index_status(local_repo)
+        if status and status.get("status") in ("done", "error"):
+            break
+        time.sleep(0.2)
+    assert status is not None
+    assert status.get("status") == "done", f"构建未完成: {status}"
+
+    index_service._FRESH_CACHE.clear()
+    assert index_service.index_fresh(local_repo) is True
+
+
+def test_should_full_clone_decision(monkeypatch):
+    """全量 clone 决策：体积 ≤ 1GB 全量，> 阈值或查不到走浅克隆，阈值可配。"""
+    monkeypatch.setenv("GITHUB_TOKEN", "")
+
+    class FakeResp:
+        def __init__(self, size_kb):
+            self._size = size_kb
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"size": self._size}
+
+    monkeypatch.setattr(git_service.httpx, "get", lambda url, **kw: FakeResp(100 * 1024))
+    assert git_service._should_full_clone("https://github.com/owner/repo.git") is True
+
+    monkeypatch.setattr(git_service.httpx, "get", lambda url, **kw: FakeResp(2 * 1024 * 1024))
+    assert git_service._should_full_clone("https://github.com/owner/repo.git") is False
+
+    def boom(url, **kw):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(git_service.httpx, "get", boom)
+    assert git_service._should_full_clone("https://github.com/owner/repo.git") is False
+
+    # 非 GitHub 仓库不查 API，直接浅克隆
+    assert git_service._should_full_clone("https://gitlab.com/owner/repo.git") is False
+
+    # 阈值可配置
+    monkeypatch.setenv("CODETRACE_CLONE_THRESHOLD_KB", str(50 * 1024))
+    monkeypatch.setattr(git_service.httpx, "get", lambda url, **kw: FakeResp(100 * 1024))
+    assert git_service._should_full_clone("https://github.com/owner/repo.git") is False
+
+
+def test_index_status_sse_endpoint(local_repo, monkeypatch):
+    """SSE 进度端点：能流式返回索引构建状态直到完成。"""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from routers.trace import router
+
+    # 让 URL → 路径推导指向本地测试仓库
+    monkeypatch.setattr(git_service, "CACHE_DIR", local_repo.parent)
+    app = FastAPI()
+    app.include_router(router, prefix="/api")
+    client = TestClient(app)
+
+    index_service._FRESH_CACHE.clear()
+    assert index_service.request_index_build(local_repo)
+
+    resp = client.get(
+        "/api/repo/index-status?repo_url=https://github.com/owner/repo.git",
+        timeout=30,
+    )
+    assert resp.status_code == 200
+    assert resp.headers.get("content-type", "").startswith("text/event-stream")
+    body = resp.text
+    assert "data:" in body
+    assert "[DONE]" in body
 
 
 def test_ensure_indexed_non_repo(tmp_path):

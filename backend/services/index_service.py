@@ -17,6 +17,7 @@ import os
 import re
 import sqlite3
 import subprocess
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -25,6 +26,9 @@ _FRESH_CACHE: dict[Path, tuple[bool, float]] = {}
 _FRESH_TTL = 30.0  # 秒，避免每次请求都跑 rev-parse
 _PR_CACHE_TTL = 7 * 24 * 3600  # PR 信息缓存 7 天
 _SCHEMA_VERSION = "2"  # 索引 schema 版本，升级时强制全量重建
+
+_BUILD_THREADS: dict[str, threading.Thread] = {}
+_BUILD_THREADS_LOCK = threading.Lock()
 
 
 # ── 路径 ──────────────────────────────────────────────
@@ -130,6 +134,96 @@ def _release_lock(name: str):
         pass
 
 
+# ── 后台构建（异步触发 + 进度上报） ─────────────────────
+
+
+def _status_path(repo_path: Path) -> Path:
+    return _index_dir() / "status" / f"{_safe_name(Path(repo_path).name)}.json"
+
+
+def _update_build_status(repo_path: Path, **fields) -> bool:
+    """原子更新构建状态（status/stage/message/...）。失败静默。"""
+    try:
+        path = _status_path(repo_path)
+        os.makedirs(path.parent, exist_ok=True)
+        data = {}
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8"))
+        data.update(fields)
+        data["updated_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, path)
+        return True
+    except Exception:
+        return False
+
+
+def get_index_status(repo_path: Path) -> dict | None:
+    """读取构建状态；无状态记录返回 None。"""
+    try:
+        path = _status_path(repo_path)
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return None
+
+
+_STAGE_MESSAGES = {
+    "queued": "排队等待构建",
+    "scan": "扫描 commit 历史",
+    "files": "刷新文件清单",
+    "symbols": "提取代码符号",
+    "done": "索引构建完成",
+    "error": "索引构建失败，已回退 git 路径",
+}
+
+
+def _background_build(repo_path: Path):
+    name = Path(repo_path).name
+    _update_build_status(repo_path, repo=name, status="running", stage="queued",
+                         message=_STAGE_MESSAGES["queued"])
+
+    def report(stage: str, detail: dict):
+        _update_build_status(
+            repo_path,
+            status="running",
+            stage=stage,
+            message=_STAGE_MESSAGES.get(stage, stage),
+            **detail,
+        )
+
+    try:
+        ok = ensure_indexed(repo_path, report=report)
+        stage = "done" if ok else "error"
+        _update_build_status(repo_path, status=stage, stage=stage,
+                             message=_STAGE_MESSAGES[stage])
+    except Exception:
+        _update_build_status(repo_path, status="error", stage="error",
+                             message=_STAGE_MESSAGES["error"])
+
+
+def request_index_build(repo_path: Path) -> bool:
+    """后台异步触发索引构建（幂等：同仓库已有构建线程则跳过）。"""
+    try:
+        repo_path = Path(repo_path)
+        name = repo_path.name
+        with _BUILD_THREADS_LOCK:
+            existing = _BUILD_THREADS.get(name)
+            if existing and existing.is_alive():
+                return False
+            t = threading.Thread(
+                target=_background_build, args=(repo_path,),
+                name=f"index-{name}", daemon=True,
+            )
+            _BUILD_THREADS[name] = t
+            t.start()
+            return True
+    except Exception:
+        return False
+
+
 # ── git 基础操作 ───────────────────────────────────────
 
 
@@ -194,7 +288,9 @@ def index_fresh(repo_path: Path) -> bool:
 # ── 建索引（3 次扫描） ─────────────────────────────────
 
 
-def _fill_from_numstat(repo_path: Path, con: sqlite3.Connection, extra_args: list[str]):
+def _fill_from_numstat(
+    repo_path: Path, con: sqlite3.Connection, extra_args: list[str], report=None
+):
     """一次 git log --numstat 遍历 → commits + file_commits 事实表。"""
     cmd = ["git", "log", "--numstat", "--pretty=format:__COMMIT__%H|%an|%ai|%s"] + extra_args
     result = subprocess.run(
@@ -204,6 +300,8 @@ def _fill_from_numstat(repo_path: Path, con: sqlite3.Connection, extra_args: lis
     result.check_returncode()
 
     current = None
+    n_commits = 0
+    n_rows = 0
     for line in result.stdout.split("\n"):
         line = line.strip()
         if not line:
@@ -212,6 +310,9 @@ def _fill_from_numstat(repo_path: Path, con: sqlite3.Connection, extra_args: lis
             parts = line[10:].split("|", 3)
             current = (parts[0], parts[1], parts[2], parts[3] if len(parts) > 3 else "")
             con.execute("INSERT OR IGNORE INTO commits VALUES (?,?,?,?)", current)
+            n_commits += 1
+            if report and n_commits % 500 == 0:
+                report("scan", {"commits": n_commits, "file_rows": n_rows})
         elif current and "\t" in line:
             try:
                 a, d, f = line.split("\t")
@@ -246,9 +347,14 @@ def _fill_from_numstat(repo_path: Path, con: sqlite3.Connection, extra_args: lis
                 "INSERT OR IGNORE INTO file_commits VALUES (?,?,?,?)",
                 (f, current[0], av, dv),
             )
+            n_rows += 1
+    if report:
+        report("scan", {"commits": n_commits, "file_rows": n_rows})
 
 
-def _refresh_files(repo_path: Path, con: sqlite3.Connection) -> list[str]:
+def _refresh_files(
+    repo_path: Path, con: sqlite3.Connection, report=None
+) -> list[str]:
     """ls-tree 刷新文件清单，返回当前全部文件路径。"""
     result = subprocess.run(
         ["git", "ls-tree", "-r", "--name-only", "HEAD"],
@@ -259,17 +365,21 @@ def _refresh_files(repo_path: Path, con: sqlite3.Connection) -> list[str]:
     files = [line for line in result.stdout.strip().split("\n") if line]
     con.execute("DELETE FROM files")
     con.executemany("INSERT OR IGNORE INTO files VALUES (?)", [(f,) for f in files])
+    if report:
+        report("files", {"count": len(files)})
     return files
 
 
-def _refresh_symbols(repo_path: Path, con: sqlite3.Connection, files: list[str]):
+def _refresh_symbols(
+    repo_path: Path, con: sqlite3.Connection, files: list[str], report=None
+):
     """AST 符号全量重提（磁盘读取，快）。"""
     # 延迟导入，避免与 git_service 形成循环依赖
     from services.ast_service import extract_symbols_fast
 
     con.execute("DELETE FROM symbols")
     rows = []
-    for fp in files:
+    for i, fp in enumerate(files):
         try:
             p = Path(repo_path) / fp
             if p.stat().st_size > 2 * 1024 * 1024:
@@ -285,7 +395,11 @@ def _refresh_symbols(repo_path: Path, con: sqlite3.Connection, files: list[str])
             rows.append((fp, sym["name"], "function", sym["start_line"]))
         for sym in syms.get("classes", []):
             rows.append((fp, sym["name"], "class", sym["start_line"]))
+        if report and (i + 1) % 500 == 0:
+            report("symbols", {"processed": i + 1, "total": len(files), "found": len(rows)})
     con.executemany("INSERT OR IGNORE INTO symbols VALUES (?,?,?,?)", rows)
+    if report:
+        report("symbols", {"processed": len(files), "total": len(files), "found": len(rows)})
 
 
 def _write_meta(con: sqlite3.Connection, head: str):
@@ -296,17 +410,19 @@ def _write_meta(con: sqlite3.Connection, head: str):
     con.commit()
 
 
-def _build_full(repo_path: Path, con: sqlite3.Connection, head: str):
+def _build_full(repo_path: Path, con: sqlite3.Connection, head: str, report=None):
     con.executescript(_SCHEMA)
     for table in ("file_commits", "commits", "files", "symbols", "renames"):
         con.execute(f"DELETE FROM {table}")
-    _fill_from_numstat(repo_path, con, ["--reverse"])
-    files = _refresh_files(repo_path, con)
-    _refresh_symbols(repo_path, con, files)
+    _fill_from_numstat(repo_path, con, ["--reverse"], report=report)
+    files = _refresh_files(repo_path, con, report=report)
+    _refresh_symbols(repo_path, con, files, report=report)
     _write_meta(con, head)
 
 
-def _build_incremental(repo_path: Path, con: sqlite3.Connection, old_head: str, head: str) -> bool:
+def _build_incremental(
+    repo_path: Path, con: sqlite3.Connection, old_head: str, head: str, report=None
+) -> bool:
     """增量更新：只读 old_head..HEAD 的新 commit。历史不连续时返回 False。"""
     try:
         check = subprocess.run(
@@ -315,16 +431,16 @@ def _build_incremental(repo_path: Path, con: sqlite3.Connection, old_head: str, 
         )
         if check.returncode != 0:
             return False  # 历史不连续（force push / 浅克隆边界）→ 全量重建
-        _fill_from_numstat(repo_path, con, [f"{old_head}..{head}"])
-        files = _refresh_files(repo_path, con)
-        _refresh_symbols(repo_path, con, files)
+        _fill_from_numstat(repo_path, con, [f"{old_head}..{head}"], report=report)
+        files = _refresh_files(repo_path, con, report=report)
+        _refresh_symbols(repo_path, con, files, report=report)
         _write_meta(con, head)
         return True
     except Exception:
         return False
 
 
-def ensure_indexed(repo_path: Path) -> bool:
+def ensure_indexed(repo_path: Path, report=None) -> bool:
     """确保仓库索引存在且与当前 HEAD 一致。任何失败都返回 False（调用方静默回退 git）。"""
     try:
         repo_path = Path(repo_path)
@@ -348,10 +464,12 @@ def ensure_indexed(repo_path: Path) -> bool:
                 con.executescript(_SCHEMA)
                 old_head = _meta_value(con, "head_hash")
                 old_ver = _meta_value(con, "schema_version")
-                if old_head and old_ver == _SCHEMA_VERSION and not _build_incremental(repo_path, con, old_head, head):
-                    _build_full(repo_path, con, head)
+                if old_head and old_ver == _SCHEMA_VERSION and not _build_incremental(
+                    repo_path, con, old_head, head, report=report
+                ):
+                    _build_full(repo_path, con, head, report=report)
                 elif not old_head or old_ver != _SCHEMA_VERSION:
-                    _build_full(repo_path, con, head)
+                    _build_full(repo_path, con, head, report=report)
             finally:
                 con.close()
             _mark_fresh(repo_path, True)

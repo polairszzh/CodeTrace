@@ -75,6 +75,8 @@ def build_agent(registry: ToolRegistry, llm: LLMService | None = None):
         )
 
     tools_schemas = registry.list_schemas()
+    # 并发工具调用上限：防止并行执行触发限流/资源竞争（每次 Agent 运行独立）
+    tool_semaphore = asyncio.Semaphore(4)
 
     # ── 节点函数 ────────────────────────────────────────────
 
@@ -139,14 +141,15 @@ def build_agent(registry: ToolRegistry, llm: LLMService | None = None):
             except json.JSONDecodeError:
                 args = {}
 
-            tool = registry.get(tool_name)
-            if not tool:
-                result = {"error": f"工具不存在: {tool_name}"}
-            else:
-                try:
-                    result = await asyncio.to_thread(tool.execute, **args)
-                except Exception as e:
-                    result = {"error": str(e)}
+            async with tool_semaphore:
+                tool = registry.get(tool_name)
+                if not tool:
+                    result = {"error": f"工具不存在: {tool_name}"}
+                else:
+                    try:
+                        result = await asyncio.to_thread(tool.execute, **args)
+                    except Exception as e:
+                        result = {"error": str(e)}
 
             record = {"tool": tool_name, "args": args, "result": result}
             tool_msg = {
