@@ -1,5 +1,6 @@
 """测试 LangGraph Agent 规划层"""
 
+import asyncio
 import os
 
 REPO_URL = "https://github.com/polairszzh/CodeTrace.git"
@@ -24,11 +25,13 @@ def test_run_agent_on_small_goal():
     from services.agent.graph import run_agent
     from services.agent.tools import registry
 
-    result = run_agent(
-        registry,
-        goal=f"分析 {REPO_URL}，快速查看有哪些热点文件",
-        repo_url=REPO_URL,
-        max_steps=4,
+    result = asyncio.run(
+        run_agent(
+            registry,
+            goal=f"分析 {REPO_URL}，快速查看有哪些热点文件",
+            repo_url=REPO_URL,
+            max_steps=4,
+        )
     )
 
     assert "steps" in result
@@ -52,11 +55,13 @@ def test_run_agent_no_llm_fallback():
         del os.environ["LLM_API_KEY"]
 
     try:
-        result = run_agent(
-            registry,
-            goal="分析这个仓库",
-            repo_url=REPO_URL,
-            max_steps=1,
+        result = asyncio.run(
+            run_agent(
+                registry,
+                goal="分析这个仓库",
+                repo_url=REPO_URL,
+                max_steps=1,
+            )
         )
         # 至少不会崩溃，返回完整结构
         assert "steps" in result

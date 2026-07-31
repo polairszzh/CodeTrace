@@ -3,6 +3,8 @@ import subprocess
 import time
 from pathlib import Path
 
+from services import index_service
+
 CACHE_DIR = Path(os.getenv("CODETRACE_CACHE", "/tmp/codetrace"))
 
 # 内存缓存：repo_url → (repo_path, timestamp)
@@ -79,6 +81,14 @@ def _remote_head(repo_url: str) -> str | None:
         return None
 
 
+def _ensure_indexed_silent(repo_path: Path):
+    """补索引（失败静默，不阻塞主流程）。"""
+    try:
+        index_service.ensure_indexed(repo_path)
+    except Exception:
+        pass
+
+
 def clone_or_pull_repo(repo_url: str) -> Path:
     """
     Clone the repository if it doesn't exist, or pull if the remote has changed.
@@ -117,6 +127,7 @@ def clone_or_pull_repo(repo_url: str) -> Path:
         finally:
             if locked:
                 _release_lock(repo_name)
+        _ensure_indexed_silent(repo_path)
         _cache[repo_url] = (repo_path, time.time())
         return repo_path
 
@@ -124,6 +135,7 @@ def clone_or_pull_repo(repo_url: str) -> Path:
     _cache[repo_url] = (repo_path, time.time())
     remote_hash = _remote_head(repo_url)
     if remote_hash is None:
+        _ensure_indexed_silent(repo_path)
         return repo_path
 
     try:
@@ -136,6 +148,7 @@ def clone_or_pull_repo(repo_url: str) -> Path:
         local_hash = ""
 
     if local_hash == remote_hash:
+        _ensure_indexed_silent(repo_path)
         return repo_path
 
     # 不一致 → pull（加锁防并发）
@@ -151,6 +164,7 @@ def clone_or_pull_repo(repo_url: str) -> Path:
         if locked:
             _release_lock(repo_name)
 
+    _ensure_indexed_silent(repo_path)
     return repo_path
 
 def get_file_commits(repo_path: Path, file_path: str) -> list[dict]:
@@ -164,6 +178,13 @@ def get_file_commits(repo_path: Path, file_path: str) -> list[dict]:
     Returns:
         list[dict]: A list of commit info dicts with keys: hash, author, date, message.
     """
+    # 索引优先：新鲜则走 SQLite，异常回退 git
+    if index_service.index_fresh(repo_path):
+        try:
+            return index_service.get_file_commits(repo_path, file_path)
+        except Exception:
+            pass
+
     # Use git log to get the commit history for the specific file
     result = subprocess.run(
         ["git", "log", "--follow", "--format=%H|%an|%ai|%s", "--", file_path],
@@ -201,6 +222,12 @@ def get_commit_diff_stats(repo_path: Path, commit_hash: str) -> dict:
     Returns:
         dict: {"additions": int, "deletions": int, "files_changed": int}
     """
+    if index_service.index_fresh(repo_path):
+        try:
+            return index_service.get_commit_diff_stats(repo_path, commit_hash)
+        except Exception:
+            pass
+
     result = subprocess.run(
         ["git", "show", "--stat", "--format=", commit_hash],
         cwd=repo_path,
@@ -305,6 +332,12 @@ def get_file_content_at_commit(repo_path: Path, commit_hash: str, file_path: str
 
 def list_files_at_commit(repo_path: Path, commit_hash: str) -> list[str]:
     """获取指定 commit 的仓库文件列表"""
+    if commit_hash == "HEAD" and index_service.index_fresh(repo_path):
+        try:
+            return index_service.list_files_at_head(repo_path)
+        except Exception:
+            pass
+
     result = subprocess.run(
         ["git", "ls-tree", "-r", "--name-only", commit_hash],
         cwd=repo_path, capture_output=True, text=True, encoding="utf-8",
@@ -325,6 +358,12 @@ def list_files_changed_in_commit(repo_path: Path, commit_hash: str) -> list[str]
 
 def get_top_changed_files(repo_path: Path, top_n: int = 10) -> list[str]:
       """扫描整个仓库，返回变更频率最高的前 N 个文件路径。"""
+      if index_service.index_fresh(repo_path):
+          try:
+              return index_service.get_top_changed_files(repo_path, top_n)
+          except Exception:
+              pass
+
       from collections import Counter
 
       result = subprocess.run(
@@ -344,6 +383,12 @@ def get_top_changed_files(repo_path: Path, top_n: int = 10) -> list[str]:
 
 def get_file_commit_counts(repo_path: Path) -> dict:
     """轻量：获取每个文件的 commit 次数，用于风险评估。"""
+    if index_service.index_fresh(repo_path):
+        try:
+            return index_service.get_file_commit_counts(repo_path)
+        except Exception:
+            pass
+
     from collections import Counter
 
     result = subprocess.run(
@@ -360,6 +405,12 @@ def get_file_commit_counts(repo_path: Path) -> dict:
 
 def get_repo_summary(repo_path: Path) -> dict:
     """快速聚合仓库概要统计。"""
+    if index_service.index_fresh(repo_path):
+        try:
+            return index_service.get_repo_summary(repo_path)
+        except Exception:
+            pass
+
     # Total authors + recent commits in one pass
     log_result = subprocess.run(
         ["git", "log", "--pretty=format:%an|%ai|%s", "-50"],
@@ -459,6 +510,12 @@ def get_file_health_stats(repo_path: Path, top_n: int = 20) -> list[dict]:
     - commit_messages: 最近 commit message 列表（供 LLM 语义分类）
     - top_authors: 主要贡献者
     """
+    if index_service.index_fresh(repo_path):
+        try:
+            return index_service.get_file_health_stats(repo_path, top_n)
+        except Exception:
+            pass
+
     from collections import defaultdict
     import datetime
 
@@ -487,7 +544,7 @@ def get_file_health_stats(repo_path: Path, top_n: int = 20) -> list[dict]:
 
         if line.startswith("__COMMIT__"):
             # 新 commit 开始
-            parts = line[9:].split("|", 3)
+            parts = line[10:].split("|", 3)
             current_commit = {
                 "hash": parts[0] if len(parts) > 0 else "",
                 "author": parts[1] if len(parts) > 1 else "",
@@ -588,6 +645,12 @@ def get_recent_commit_groups(repo_path: Path, count: int = 15) -> list[dict]:
         list[dict]: 每项含 commit_hash, author, date, message,
                     file_count, total_churn, files (列表，含 path, additions, deletions)
     """
+    if index_service.index_fresh(repo_path):
+        try:
+            return index_service.get_recent_commit_groups(repo_path, count)
+        except Exception:
+            pass
+
     result = subprocess.run(
         ["git", "log", "--numstat", "--pretty=format:__COMMIT__%H|%an|%ai|%s", f"-{count}"],
         cwd=repo_path,
@@ -613,7 +676,7 @@ def get_recent_commit_groups(repo_path: Path, count: int = 15) -> list[dict]:
                 if current["file_count"] > 0:
                     groups.append(current)
 
-            parts = line[9:].split("|", 3)
+            parts = line[10:].split("|", 3)
             current = {
                 "commit_hash": parts[0] if len(parts) > 0 else "",
                 "author": parts[1] if len(parts) > 1 else "",
@@ -665,6 +728,12 @@ def get_co_change_trends(repo_path: Path, window_days: int = 30) -> list[dict]:
             - boundary_crossings: 近期跨模块共现次数
             - risk: 预置风险标签
     """
+    if index_service.index_fresh(repo_path):
+        try:
+            return index_service.get_co_change_trends(repo_path, window_days)
+        except Exception:
+            pass
+
     from collections import defaultdict, Counter
     import datetime
 
@@ -750,6 +819,12 @@ def get_co_change_edges(repo_path: Path, window_days: int = 30) -> dict:
             nodes 每项含 id/label/module/recent_partners/old_partners/coupling_growth/boundary_crossings/risk
             edges 每项含 source/target/weight（weight = 共变次数）
     """
+    if index_service.index_fresh(repo_path):
+        try:
+            return index_service.get_co_change_edges(repo_path, window_days)
+        except Exception:
+            pass
+
     from collections import defaultdict, Counter
     import datetime
 

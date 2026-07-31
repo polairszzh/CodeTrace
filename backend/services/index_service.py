@@ -1,0 +1,827 @@
+"""持久化预索引服务 — SQLite 事实表 + 派生查询。
+
+设计（2026-07-31 拍板，见 .loci/decisions/2026-07-31-持久化预索引方案.md）：
+- 存储：每个仓库一个 SQLite 库文件 `<INDEX_DIR>/<repo>.db`
+  （INDEX_DIR = CODETRACE_INDEX_DIR，未设置则用 CODETRACE_CACHE/index）
+- 事实表：commits / files / file_commits(核心) / symbols / pr_cache
+- 不物化 co_change_pairs：从 file_commits 用 JOIN 派生（实测 4.5ms）
+- 建索引：一次 `git log --numstat` 遍历产出 commits + file_commits，
+  加一次 ls-tree（文件清单）和一次 AST 符号提取，共 3 次扫描
+- 增量更新：head 变化时只读 `git log old_head..HEAD` 的新 commit，
+  files/symbols 全量刷新（快）
+- 任何失败 → 调用方静默回退原 git 路径，不破坏现有功能
+"""
+
+import json
+import os
+import re
+import sqlite3
+import subprocess
+import time
+from datetime import datetime
+from pathlib import Path
+
+_FRESH_CACHE: dict[Path, tuple[bool, float]] = {}
+_FRESH_TTL = 30.0  # 秒，避免每次请求都跑 rev-parse
+_PR_CACHE_TTL = 7 * 24 * 3600  # PR 信息缓存 7 天
+_SCHEMA_VERSION = "2"  # 索引 schema 版本，升级时强制全量重建
+
+
+# ── 路径 ──────────────────────────────────────────────
+
+
+def _cache_root() -> Path:
+    return Path(os.getenv("CODETRACE_CACHE", "/tmp/codetrace"))
+
+
+def _index_dir() -> Path:
+    override = os.getenv("CODETRACE_INDEX_DIR")
+    return Path(override) if override else _cache_root() / "index"
+
+
+def _safe_name(name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", name)
+
+
+def _db_path_for_name(name: str) -> Path:
+    return _index_dir() / f"{_safe_name(name.rstrip('/').replace('.git', ''))}.db"
+
+
+def _db_path(repo_path: Path) -> Path:
+    return _db_path_for_name(Path(repo_path).name)
+
+
+def _lock_dir() -> Path:
+    return _index_dir() / ".locks"
+
+
+def _connect(db: Path) -> sqlite3.Connection:
+    os.makedirs(db.parent, exist_ok=True)
+    con = sqlite3.connect(db, timeout=15)
+    con.execute("PRAGMA busy_timeout=10000")
+    return con
+
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS commits(
+    hash TEXT PRIMARY KEY,
+    author TEXT,
+    date TEXT,
+    message TEXT
+);
+CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS file_commits(
+    file TEXT,
+    commit_hash TEXT,
+    additions INTEGER,
+    deletions INTEGER,
+    PRIMARY KEY(file, commit_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_fc_commit ON file_commits(commit_hash);
+CREATE TABLE IF NOT EXISTS symbols(
+    file TEXT,
+    name TEXT,
+    kind TEXT,
+    line INTEGER,
+    PRIMARY KEY(file, name, kind)
+);
+CREATE TABLE IF NOT EXISTS renames(
+    file TEXT,
+    prev_file TEXT,
+    commit_hash TEXT,
+    PRIMARY KEY(file, commit_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_renames_prev ON renames(prev_file);
+CREATE TABLE IF NOT EXISTS pr_cache(
+    repo TEXT,
+    pr_number INTEGER,
+    payload TEXT,
+    fetched_at TEXT,
+    PRIMARY KEY(repo, pr_number)
+);
+CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
+"""
+
+
+# ── 并发锁（mkdir 原子性，与 git_service 同款） ──────────
+
+
+def _acquire_lock(name: str, timeout: float = 120) -> bool:
+    try:
+        os.makedirs(_lock_dir(), exist_ok=True)
+    except Exception:
+        return False
+    lock_path = _lock_dir() / _safe_name(name)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            os.mkdir(lock_path)
+            return True
+        except FileExistsError:
+            time.sleep(0.2)
+    return False
+
+
+def _release_lock(name: str):
+    lock_path = _lock_dir() / _safe_name(name)
+    try:
+        os.rmdir(lock_path)
+    except OSError:
+        pass
+
+
+# ── git 基础操作 ───────────────────────────────────────
+
+
+def _git_head(repo_path: Path) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_path, capture_output=True, text=True, timeout=15,
+        )
+        head = result.stdout.strip()
+        return head or None
+    except Exception:
+        return None
+
+
+def _meta_value(con: sqlite3.Connection, key: str, default=None):
+    row = con.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+    return row[0] if row else default
+
+
+def _is_fresh(db: Path, head: str | None) -> bool:
+    """库存在、head_hash 与当前 HEAD 一致，且 schema 版本匹配。"""
+    if head is None or not db.exists():
+        return False
+    try:
+        con = sqlite3.connect(db, timeout=10)
+        try:
+            head_row = con.execute("SELECT value FROM meta WHERE key = 'head_hash'").fetchone()
+            ver_row = con.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+        finally:
+            con.close()
+        return (
+            bool(head_row)
+            and head_row[0] == head
+            and bool(ver_row)
+            and ver_row[0] == _SCHEMA_VERSION
+        )
+    except Exception:
+        return False
+
+
+def _mark_fresh(repo_path: Path, fresh: bool = True):
+    _FRESH_CACHE[Path(repo_path)] = (fresh, time.time())
+
+
+def index_fresh(repo_path: Path) -> bool:
+    """索引是否与当前 HEAD 一致（轻量检查，不触发构建）。"""
+    try:
+        repo_path = Path(repo_path)
+        now = time.time()
+        cached = _FRESH_CACHE.get(repo_path)
+        if cached and now - cached[1] < _FRESH_TTL:
+            return cached[0]
+        head = _git_head(repo_path)
+        fresh = head is not None and _is_fresh(_db_path(repo_path), head)
+        _FRESH_CACHE[repo_path] = (fresh, now)
+        return fresh
+    except Exception:
+        return False
+
+
+# ── 建索引（3 次扫描） ─────────────────────────────────
+
+
+def _fill_from_numstat(repo_path: Path, con: sqlite3.Connection, extra_args: list[str]):
+    """一次 git log --numstat 遍历 → commits + file_commits 事实表。"""
+    cmd = ["git", "log", "--numstat", "--pretty=format:__COMMIT__%H|%an|%ai|%s"] + extra_args
+    result = subprocess.run(
+        cmd, cwd=repo_path, capture_output=True, text=True,
+        encoding="utf-8", timeout=600,
+    )
+    result.check_returncode()
+
+    current = None
+    for line in result.stdout.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("__COMMIT__"):
+            parts = line[10:].split("|", 3)
+            current = (parts[0], parts[1], parts[2], parts[3] if len(parts) > 3 else "")
+            con.execute("INSERT OR IGNORE INTO commits VALUES (?,?,?,?)", current)
+        elif current and "\t" in line:
+            try:
+                a, d, f = line.split("\t")
+            except ValueError:
+                continue
+            if a == "-" or d == "-":
+                continue  # 二进制文件
+            try:
+                av, dv = int(a or 0), int(d or 0)
+            except ValueError:
+                continue
+            if " => " in f:
+                # 重命名行（git 默认开启 rename 检测）：拆成两条事实行
+                # （旧路径 0/0，新路径记真实变更行数），同时产出 rename 边供 --follow 等价查询
+                old, new = f.split(" => ", 1)
+                old = old.strip().strip('"')
+                new = new.strip().strip('"')
+                con.execute(
+                    "INSERT OR IGNORE INTO file_commits VALUES (?,?,?,?)",
+                    (old, current[0], 0, 0),
+                )
+                con.execute(
+                    "INSERT OR IGNORE INTO file_commits VALUES (?,?,?,?)",
+                    (new, current[0], av, dv),
+                )
+                con.execute(
+                    "INSERT OR IGNORE INTO renames VALUES (?,?,?)",
+                    (new, old, current[0]),
+                )
+                continue
+            con.execute(
+                "INSERT OR IGNORE INTO file_commits VALUES (?,?,?,?)",
+                (f, current[0], av, dv),
+            )
+
+
+def _refresh_files(repo_path: Path, con: sqlite3.Connection) -> list[str]:
+    """ls-tree 刷新文件清单，返回当前全部文件路径。"""
+    result = subprocess.run(
+        ["git", "ls-tree", "-r", "--name-only", "HEAD"],
+        cwd=repo_path, capture_output=True, text=True,
+        encoding="utf-8", timeout=120,
+    )
+    result.check_returncode()
+    files = [line for line in result.stdout.strip().split("\n") if line]
+    con.execute("DELETE FROM files")
+    con.executemany("INSERT OR IGNORE INTO files VALUES (?)", [(f,) for f in files])
+    return files
+
+
+def _refresh_symbols(repo_path: Path, con: sqlite3.Connection, files: list[str]):
+    """AST 符号全量重提（磁盘读取，快）。"""
+    # 延迟导入，避免与 git_service 形成循环依赖
+    from services.ast_service import extract_symbols_fast
+
+    con.execute("DELETE FROM symbols")
+    rows = []
+    for fp in files:
+        try:
+            p = Path(repo_path) / fp
+            if p.stat().st_size > 2 * 1024 * 1024:
+                continue  # 跳过超大文件
+            content = p.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        try:
+            syms = extract_symbols_fast(content, fp)
+        except Exception:
+            continue
+        for sym in syms.get("functions", []):
+            rows.append((fp, sym["name"], "function", sym["start_line"]))
+        for sym in syms.get("classes", []):
+            rows.append((fp, sym["name"], "class", sym["start_line"]))
+    con.executemany("INSERT OR IGNORE INTO symbols VALUES (?,?,?,?)", rows)
+
+
+def _write_meta(con: sqlite3.Connection, head: str):
+    now = datetime.now().astimezone().isoformat(timespec="seconds")
+    con.execute("INSERT OR REPLACE INTO meta VALUES ('head_hash', ?)", (head,))
+    con.execute("INSERT OR REPLACE INTO meta VALUES ('schema_version', ?)", (_SCHEMA_VERSION,))
+    con.execute("INSERT OR REPLACE INTO meta VALUES ('indexed_at', ?)", (now,))
+    con.commit()
+
+
+def _build_full(repo_path: Path, con: sqlite3.Connection, head: str):
+    con.executescript(_SCHEMA)
+    for table in ("file_commits", "commits", "files", "symbols", "renames"):
+        con.execute(f"DELETE FROM {table}")
+    _fill_from_numstat(repo_path, con, ["--reverse"])
+    files = _refresh_files(repo_path, con)
+    _refresh_symbols(repo_path, con, files)
+    _write_meta(con, head)
+
+
+def _build_incremental(repo_path: Path, con: sqlite3.Connection, old_head: str, head: str) -> bool:
+    """增量更新：只读 old_head..HEAD 的新 commit。历史不连续时返回 False。"""
+    try:
+        check = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", old_head, head],
+            cwd=repo_path, capture_output=True, timeout=15,
+        )
+        if check.returncode != 0:
+            return False  # 历史不连续（force push / 浅克隆边界）→ 全量重建
+        _fill_from_numstat(repo_path, con, [f"{old_head}..{head}"])
+        files = _refresh_files(repo_path, con)
+        _refresh_symbols(repo_path, con, files)
+        _write_meta(con, head)
+        return True
+    except Exception:
+        return False
+
+
+def ensure_indexed(repo_path: Path) -> bool:
+    """确保仓库索引存在且与当前 HEAD 一致。任何失败都返回 False（调用方静默回退 git）。"""
+    try:
+        repo_path = Path(repo_path)
+        if not (repo_path / ".git").exists():
+            return False
+        head = _git_head(repo_path)
+        if head is None:
+            return False
+        db = _db_path(repo_path)
+        if _is_fresh(db, head):
+            _mark_fresh(repo_path, True)
+            return True
+        if not _acquire_lock(repo_path.name, timeout=120):
+            return False
+        try:
+            if _is_fresh(db, head):
+                _mark_fresh(repo_path, True)
+                return True
+            con = _connect(db)
+            try:
+                con.executescript(_SCHEMA)
+                old_head = _meta_value(con, "head_hash")
+                old_ver = _meta_value(con, "schema_version")
+                if old_head and old_ver == _SCHEMA_VERSION and not _build_incremental(repo_path, con, old_head, head):
+                    _build_full(repo_path, con, head)
+                elif not old_head or old_ver != _SCHEMA_VERSION:
+                    _build_full(repo_path, con, head)
+            finally:
+                con.close()
+            _mark_fresh(repo_path, True)
+            return True
+        finally:
+            _release_lock(repo_path.name)
+    except Exception:
+        return False
+
+
+# ── 派生查询（热路径） ─────────────────────────────────
+
+
+def get_file_commits(repo_path: Path, file_path: str) -> list[dict]:
+    """文件 commit 历史（等价 git log --follow：沿时间向后跟随重命名）。"""
+    con = _connect(_db_path(repo_path))
+    try:
+        commits = {}
+
+        def _collect(f: str, boundary: str | None = None):
+            if boundary is None:
+                rows = con.execute(
+                    """SELECT c.hash, c.author, c.date, c.message
+                       FROM file_commits fc JOIN commits c ON fc.commit_hash = c.hash
+                       WHERE fc.file = ?""",
+                    (f,),
+                ).fetchall()
+            else:
+                rows = con.execute(
+                    """SELECT c.hash, c.author, c.date, c.message
+                       FROM file_commits fc JOIN commits c ON fc.commit_hash = c.hash
+                       WHERE fc.file = ? AND c.date < ?""",
+                    (f, boundary),
+                ).fetchall()
+            for r in rows:
+                commits.setdefault(r[0], {"hash": r[0], "author": r[1], "date": r[2], "message": r[3]})
+
+        _collect(file_path)
+        seen_paths = {file_path}
+        queue = [file_path]
+        while queue:
+            f = queue.pop()
+            # 向后跟随：file 由 prev_file 改名而来 → 取改名 commit 之前的 prev_file 历史
+            for ch, prev in con.execute(
+                "SELECT commit_hash, prev_file FROM renames WHERE file = ?", (f,)
+            ).fetchall():
+                if prev in seen_paths:
+                    continue
+                seen_paths.add(prev)
+                boundary = con.execute(
+                    "SELECT date FROM commits WHERE hash = ?", (ch,)
+                ).fetchone()
+                if boundary:
+                    _collect(prev, boundary[0])
+                queue.append(prev)
+    finally:
+        con.close()
+    return sorted(commits.values(), key=lambda c: (c["date"], c["hash"]), reverse=True)
+
+
+def get_commit_diff_stats(repo_path: Path, commit_hash: str) -> dict:
+    con = _connect(_db_path(repo_path))
+    try:
+        row = con.execute(
+            """SELECT COUNT(*), COALESCE(SUM(additions), 0), COALESCE(SUM(deletions), 0)
+               FROM file_commits WHERE commit_hash = ?""",
+            (commit_hash,),
+        ).fetchone()
+        return {
+            "additions": row[1],
+            "deletions": row[2],
+            "files_changed": row[0],
+        }
+    finally:
+        con.close()
+
+
+def list_files_at_head(repo_path: Path) -> list[str]:
+    con = _connect(_db_path(repo_path))
+    try:
+        rows = con.execute("SELECT path FROM files ORDER BY path").fetchall()
+        return [r[0] for r in rows]
+    finally:
+        con.close()
+
+
+def get_top_changed_files(repo_path: Path, top_n: int = 10) -> list[str]:
+    con = _connect(_db_path(repo_path))
+    try:
+        rows = con.execute(
+            """SELECT file FROM file_commits
+               GROUP BY file ORDER BY COUNT(*) DESC, file LIMIT ?""",
+            (top_n,),
+        ).fetchall()
+        return [r[0] for r in rows]
+    finally:
+        con.close()
+
+
+def get_file_commit_counts(repo_path: Path) -> dict:
+    con = _connect(_db_path(repo_path))
+    try:
+        rows = con.execute(
+            "SELECT file, COUNT(*) FROM file_commits GROUP BY file"
+        ).fetchall()
+        return {r[0]: r[1] for r in rows}
+    finally:
+        con.close()
+
+
+def get_repo_summary(repo_path: Path) -> dict:
+    con = _connect(_db_path(repo_path))
+    try:
+        total_commits = con.execute("SELECT COUNT(*) FROM commits").fetchone()[0]
+        total_files = con.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+        total_authors = con.execute(
+            "SELECT COUNT(DISTINCT author) FROM commits"
+        ).fetchone()[0]
+        recent = con.execute(
+            """SELECT author, date, message FROM commits
+               ORDER BY date DESC, hash DESC LIMIT 15"""
+        ).fetchall()
+        recent_commits = [
+            {"author": r[0], "date": r[1][:10], "message": r[2][:80]}
+            for r in recent
+        ]
+    finally:
+        con.close()
+    return {
+        "total_commits": total_commits,
+        "total_files": total_files,
+        "total_authors": total_authors,
+        "top_files": get_top_changed_files(repo_path, top_n=10),
+        "recent_commits": recent_commits,
+    }
+
+
+def get_file_health_stats(repo_path: Path, top_n: int = 20) -> list[dict]:
+    con = _connect(_db_path(repo_path))
+    try:
+        rows = con.execute(
+            """SELECT fc.file,
+                      COUNT(*),
+                      COALESCE(SUM(fc.additions), 0),
+                      COALESCE(SUM(fc.deletions), 0),
+                      GROUP_CONCAT(DISTINCT c.author)
+               FROM file_commits fc JOIN commits c ON fc.commit_hash = c.hash
+               GROUP BY fc.file"""
+        ).fetchall()
+        recency_rows = con.execute(
+            """SELECT fc.file, SUM(
+                      CASE WHEN substr(c.date, 1, 10) >= date('now', 'localtime', '-7 days') THEN 10
+                           WHEN substr(c.date, 1, 10) >= date('now', 'localtime', '-30 days') THEN 5
+                           WHEN substr(c.date, 1, 10) >= date('now', 'localtime', '-90 days') THEN 2
+                           ELSE 0.5 END)
+               FROM file_commits fc JOIN commits c ON fc.commit_hash = c.hash
+               GROUP BY fc.file"""
+        ).fetchall()
+    finally:
+        con.close()
+    recency = {r[0]: r[1] for r in recency_rows}
+
+    stats = []
+    for file, total, additions, deletions, authors in rows:
+        if total == 0:
+            continue
+        stats.append({
+            "file": file,
+            "total_commits": total,
+            "total_additions": additions,
+            "total_deletions": deletions,
+            "churn": additions + deletions,
+            "recency_score": round(recency.get(file, 0.5), 1),
+            "commit_messages": [],
+            "top_authors": (authors or "").split(",")[:3],
+        })
+    stats.sort(key=lambda x: x["churn"] * x["recency_score"], reverse=True)
+    top = stats[:top_n]
+
+    con = _connect(_db_path(repo_path))
+    try:
+        for s in top:
+            msgs = con.execute(
+                """SELECT c.message FROM file_commits fc
+                   JOIN commits c ON fc.commit_hash = c.hash
+                   WHERE fc.file = ? ORDER BY c.date ASC LIMIT 5""",
+                (s["file"],),
+            ).fetchall()
+            s["commit_messages"] = [m[0] for m in msgs]
+    finally:
+        con.close()
+    return top
+
+
+def get_recent_commit_groups(repo_path: Path, count: int = 15) -> list[dict]:
+    con = _connect(_db_path(repo_path))
+    try:
+        commits = con.execute(
+            """SELECT hash, author, date, message FROM commits
+               ORDER BY date DESC, hash DESC LIMIT ?""",
+            (count,),
+        ).fetchall()
+        if not commits:
+            return []
+        placeholders = ",".join("?" * len(commits))
+        fc_rows = con.execute(
+            f"""SELECT commit_hash, file, additions, deletions FROM file_commits
+                WHERE commit_hash IN ({placeholders})""",
+            [c[0] for c in commits],
+        ).fetchall()
+    finally:
+        con.close()
+
+    by_commit = {}
+    for ch, f, a, d in fc_rows:
+        by_commit.setdefault(ch, []).append({"path": f, "additions": a, "deletions": d})
+
+    groups = []
+    for ch, author, date, message in commits:
+        files = by_commit.get(ch, [])
+        if not files:
+            continue
+        groups.append({
+            "commit_hash": ch,
+            "author": author,
+            "date": date,
+            "message": message,
+            "files": files,
+            "file_count": len(files),
+            "total_churn": sum(f["additions"] + f["deletions"] for f in files),
+        })
+    return groups
+
+
+# ── co-change（从 file_commits 派生，不物化） ───────────
+
+
+def _window_groups(con: sqlite3.Connection, since: str, until: str) -> list[set[str]]:
+    """按 commit 分组取某时间窗内的文件集（对齐 git log --since/--until 语义）。"""
+    rows = con.execute(
+        """SELECT fc.commit_hash, fc.file FROM file_commits fc
+           JOIN commits c ON fc.commit_hash = c.hash
+           WHERE c.date >= ? AND c.date < ?
+           ORDER BY fc.commit_hash""",
+        (since, until),
+    ).fetchall()
+    groups = {}
+    for ch, f in rows:
+        groups.setdefault(ch, set()).add(f)
+    return list(groups.values())
+
+
+def _build_metrics(groups: list[set[str]]) -> dict:
+    from collections import Counter, defaultdict
+
+    partner_map = defaultdict(set)
+    bx_counter = Counter()
+    for files in groups:
+        flist = list(files)
+        for i, fa in enumerate(flist):
+            for fb in flist[i + 1:]:
+                partner_map[fa].add(fb)
+                partner_map[fb].add(fa)
+                ma = fa.replace("\\", "/").split("/")[0] if "/" in fa or "\\" in fa else ""
+                mb = fb.replace("\\", "/").split("/")[0] if "/" in fb or "\\" in fb else ""
+                if ma and mb and ma != mb:
+                    bx_counter[fa] += 1
+                    bx_counter[fb] += 1
+    return {f: {"partners": len(p), "bx": bx_counter.get(f, 0)} for f, p in partner_map.items()}
+
+
+def get_co_change_trends(repo_path: Path, window_days: int = 30) -> list[dict]:
+    import datetime
+
+    now = datetime.datetime.now()
+    since_r = (now - datetime.timedelta(days=window_days)).strftime("%Y-%m-%d")
+    until_r = now.strftime("%Y-%m-%d")
+    since_o = (now - datetime.timedelta(days=window_days * 2)).strftime("%Y-%m-%d")
+    until_o = since_r
+
+    con = _connect(_db_path(repo_path))
+    try:
+        recent_groups = _window_groups(con, since_r, until_r)
+        old_groups = _window_groups(con, since_o, until_o)
+    finally:
+        con.close()
+
+    recent_m = _build_metrics(recent_groups)
+    old_m = _build_metrics(old_groups)
+
+    results = []
+    for f in set(recent_m.keys()) | set(old_m.keys()):
+        rec = recent_m.get(f, {"partners": 0, "bx": 0})
+        old = old_m.get(f, {"partners": 0, "bx": 0})
+        if rec["partners"] == 0 and old["partners"] == 0:
+            continue
+        old_p = old["partners"] or 1
+        growth = round((rec["partners"] - old["partners"]) / old_p, 2)
+        delta = rec["partners"] - old["partners"]
+        rec_p = rec["partners"]
+        results.append({
+            "file": f,
+            "recent_partners": rec["partners"],
+            "old_partners": old["partners"],
+            "coupling_growth": growth,
+            "boundary_crossings": rec["bx"],
+            "risk": "high" if rec_p >= 8 and delta >= 5 else ("medium" if rec_p >= 4 and delta >= 2 else "low"),
+        })
+    results.sort(key=lambda x: (-x["coupling_growth"], -x["boundary_crossings"]))
+    return results[:30]
+
+
+def get_co_change_edges(repo_path: Path, window_days: int = 30) -> dict:
+    from collections import Counter, defaultdict
+    import datetime
+
+    now = datetime.datetime.now()
+    since_r = (now - datetime.timedelta(days=window_days)).strftime("%Y-%m-%d")
+    until_r = now.strftime("%Y-%m-%d")
+    since_o = (now - datetime.timedelta(days=window_days * 2)).strftime("%Y-%m-%d")
+    until_o = since_r
+
+    con = _connect(_db_path(repo_path))
+    try:
+        recent_groups = _window_groups(con, since_r, until_r)
+        old_groups = _window_groups(con, since_o, until_o)
+    finally:
+        con.close()
+
+    edge_counter = Counter()
+    recent_map = defaultdict(set)
+    bx_counter = Counter()
+
+    for files in recent_groups:
+        flist = list(files)
+        for i, fa in enumerate(flist):
+            for fb in flist[i + 1:]:
+                key = tuple(sorted([fa, fb]))
+                edge_counter[key] += 1
+                recent_map[fa].add(fb)
+                recent_map[fb].add(fa)
+                ma = fa.replace("\\", "/").split("/")[0] if "/" in fa or "\\" in fa else ""
+                mb = fb.replace("\\", "/").split("/")[0] if "/" in fb or "\\" in fb else ""
+                if ma and mb and ma != mb:
+                    bx_counter[fa] += 1
+                    bx_counter[fb] += 1
+
+    old_map = defaultdict(set)
+    for files in old_groups:
+        flist = list(files)
+        for i, fa in enumerate(flist):
+            for fb in flist[i + 1:]:
+                old_map[fa].add(fb)
+                old_map[fb].add(fa)
+
+    all_files = set(recent_map.keys()) | set(old_map.keys())
+    nodes = []
+    for f in all_files:
+        rec_p = len(recent_map.get(f, set()))
+        old_p = len(old_map.get(f, set()))
+        if rec_p == 0 and old_p == 0:
+            continue
+        denom = old_p or 1
+        growth = round((rec_p - old_p) / denom, 2)
+        module = f.replace("\\", "/").split("/")[0] if "/" in f or "\\" in f else ""
+        nodes.append({
+            "id": f,
+            "label": f.split("/")[-1].split("\\")[-1],
+            "module": module,
+            "recent_partners": rec_p,
+            "old_partners": old_p,
+            "coupling_growth": growth,
+            "boundary_crossings": bx_counter.get(f, 0),
+            "risk": "high" if rec_p >= 8 and (rec_p - old_p) >= 5 else ("medium" if rec_p >= 4 and (rec_p - old_p) >= 2 else "low"),
+        })
+
+    nodes.sort(key=lambda x: (-x["coupling_growth"], -x["boundary_crossings"]))
+    top_nodes = nodes[:30]
+    top_ids = {n["id"] for n in top_nodes}
+
+    edges = []
+    for (fa, fb), weight in edge_counter.most_common(200):
+        if fa in top_ids and fb in top_ids:
+            edges.append({"source": fa, "target": fb, "weight": weight})
+
+    return {"nodes": top_nodes, "edges": edges}
+
+
+# ── 符号查询（/api/repo/symbols 的 HEAD 快路径） ────────
+
+
+def get_symbols(repo_path: Path, file_path: str) -> dict | None:
+    """返回指定文件在 HEAD 的函数/类符号。文件不在索引中时返回 None。"""
+    db = _db_path(repo_path)
+    if not db.exists():
+        return None
+    con = _connect(db)
+    try:
+        exists = con.execute("SELECT 1 FROM files WHERE path = ?", (file_path,)).fetchone()
+        if not exists:
+            return None
+        rows = con.execute(
+            "SELECT name, kind, line FROM symbols WHERE file = ? ORDER BY line",
+            (file_path,),
+        ).fetchall()
+    finally:
+        con.close()
+    return {
+        "functions": [{"name": r[0], "start_line": r[2]} for r in rows if r[1] == "function"],
+        "classes": [{"name": r[0], "start_line": r[2]} for r in rows if r[1] == "class"],
+    }
+
+
+# ── PR 信息缓存 ────────────────────────────────────────
+
+
+def get_cached_pr(repo_full: str, pr_number: int) -> dict | None:
+    """读取缓存的 PR 信息；不存在或过期返回 None。"""
+    db = _db_path_for_name(repo_full.split("/")[-1])
+    if not db.exists():
+        return None
+    try:
+        con = sqlite3.connect(db, timeout=10)
+        try:
+            row = con.execute(
+                "SELECT payload, fetched_at FROM pr_cache WHERE repo = ? AND pr_number = ?",
+                (repo_full, pr_number),
+            ).fetchone()
+        finally:
+            con.close()
+        if not row:
+            return None
+        fetched = row[1] or ""
+        if fetched:
+            try:
+                fetched_ts = datetime.fromisoformat(fetched).timestamp()
+                if time.time() - fetched_ts > _PR_CACHE_TTL:
+                    return None
+            except Exception:
+                pass
+        return json.loads(row[0])
+    except Exception:
+        return None
+
+
+def set_cached_pr(repo_full: str, pr_number: int, payload: dict) -> bool:
+    """写入 PR 信息缓存。失败静默返回 False。"""
+    try:
+        db = _db_path_for_name(repo_full.split("/")[-1])
+        os.makedirs(db.parent, exist_ok=True)
+        con = sqlite3.connect(db, timeout=15)
+        try:
+            con.execute("PRAGMA busy_timeout=10000")
+            con.execute(
+                """CREATE TABLE IF NOT EXISTS pr_cache(
+                    repo TEXT, pr_number INTEGER, payload TEXT, fetched_at TEXT,
+                    PRIMARY KEY(repo, pr_number))"""
+            )
+            con.execute(
+                "INSERT OR REPLACE INTO pr_cache VALUES (?,?,?,?)",
+                (
+                    repo_full,
+                    pr_number,
+                    json.dumps(payload, ensure_ascii=False),
+                    datetime.now().astimezone().isoformat(timespec="seconds"),
+                ),
+            )
+            con.commit()
+        finally:
+            con.close()
+        return True
+    except Exception:
+        return False

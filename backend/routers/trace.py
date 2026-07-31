@@ -9,6 +9,7 @@ from services.git_service import clone_or_pull_repo, get_file_commits, get_commi
 from services.github_service import GitHubClient
 from services.llm_service import LLMService
 from services.ast_service import trace_function_across_commits, trace_class_across_commits, extract_symbols_fast
+from services.index_service import get_symbols as index_get_symbols, index_fresh
 from services.agent import registry
 from services.agent.planner import AgentPlanner
 from services.agent.graph import run_agent, run_agent_stream
@@ -198,9 +199,7 @@ async def graph_analyze(req: TraceRequest, goal: str = ""):
         raise HTTPException(status_code=500, detail=f"仓库操作失败：{str(e)}")
 
     # 并行：主 Agent 报告 + 耦合分析
-    report_task = asyncio.to_thread(
-        run_agent, registry, goal, repo_url=req.repo_url, max_steps=15
-    )
+    report_task = run_agent(registry, goal, repo_url=req.repo_url, max_steps=15)
     coupling_task = run_coupling_analysis(req.repo_url)
 
     report_raw, coupling_raw = await asyncio.gather(
@@ -292,6 +291,15 @@ async def repo_symbols(repo_url: str, file_path: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"仓库操作失败：{str(e)}")
 
+    # 索引优先：HEAD 符号直接走 SQLite，异常回退 git 读取
+    if index_fresh(repo_path):
+        try:
+            symbols = index_get_symbols(repo_path, file_path)
+            if symbols is not None:
+                return symbols
+        except Exception:
+            pass
+
     try:
         content = get_file_content_at_commit(repo_path, "HEAD", file_path)
     except Exception as e:
@@ -379,6 +387,7 @@ ASK_SYSTEM_PROMPT = """你是一个代码仓库分析助手。用户针对某个
 
 规则：
 - 先看用户问了什么，选择最直接的工具获取所需信息
+- 如果一个问题需要多个独立的信息（如同时看 diff 和文件内容），可以一次调多个工具
 - 最多调 2 次工具就应该能回答
 - 用中文回答，简洁直接，不要输出 Markdown 标题以外的格式
 - 如果用户问了超出工具能力的问题，如实告知
