@@ -353,6 +353,22 @@ def test_repo_size_cached(monkeypatch):
     git_service._SIZE_CACHE.clear()
 
 
+def test_repo_size_url_validation(monkeypatch):
+    """URL 解析严格：非完整 owner/repo 路径不请求 GitHub API。"""
+    git_service._SIZE_CACHE.clear()
+    calls = []
+    monkeypatch.setattr(
+        git_service.httpx,
+        "get",
+        lambda url, **kw: calls.append(url) or (_ for _ in ()).throw(AssertionError("不应请求 API")),
+    )
+    assert git_service._repo_size_kb("https://github.com/owner") is None
+    assert git_service._repo_size_kb("https://github.com/") is None
+    assert git_service._repo_size_kb("https://gitlab.com/owner/repo.git") is None
+    assert calls == []
+    git_service._SIZE_CACHE.clear()
+
+
 def test_request_background_skips_when_fresh(local_repo, monkeypatch):
     """索引已新鲜时，后台触发直接跳过，不开新线程。"""
     assert index_service.ensure_indexed(local_repo)
@@ -387,9 +403,29 @@ def test_index_status_sse_endpoint(local_repo, monkeypatch):
     )
     assert resp.status_code == 200
     assert resp.headers.get("content-type", "").startswith("text/event-stream")
+    assert resp.headers.get("cache-control") == "no-cache"
     body = resp.text
     assert "data:" in body
     assert "[DONE]" in body
+
+
+def test_build_thread_registry_cleaned(local_repo):
+    """构建线程结束后从注册表移除，避免长期运行残留。"""
+    index_service._FRESH_CACHE.clear()
+    name = local_repo.name
+    index_service._BUILD_THREADS.clear()
+
+    assert index_service.request_index_build(local_repo) is True
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        status = index_service.get_index_status(local_repo)
+        if status and status.get("status") in ("done", "error"):
+            break
+        time.sleep(0.2)
+    # 等线程真正结束并完成清理
+    while index_service._BUILD_THREADS.get(name) is not None and time.time() < deadline:
+        time.sleep(0.2)
+    assert index_service._BUILD_THREADS.get(name) is None
 
 
 def test_index_status_sse_not_cloned(tmp_path, monkeypatch):

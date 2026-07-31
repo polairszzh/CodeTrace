@@ -47,7 +47,7 @@ async def trace_file(req: TraceRequest):
     
     # 2. clone/pull 仓库
     try:
-        repo_path = clone_or_pull_repo(req.repo_url)
+        repo_path = await asyncio.to_thread(clone_or_pull_repo, req.repo_url)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"仓库操作失败: {str(e)}")
     
@@ -104,10 +104,10 @@ async def trace_function(req: TraceRequest, function_name: str = ""):
         raise HTTPException(status_code=400, detail="仓库地址格式有误")
     
     try:
-        repo_path = clone_or_pull_repo(req.repo_url)
+        repo_path = await asyncio.to_thread(clone_or_pull_repo, req.repo_url)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"仓库操作失败：{str(e)}")
-    
+
     result = trace_function_across_commits(repo_path, req.file_path, function_name)
     history = result["history"]
     migration_path = result.get("migration_path", [])
@@ -141,7 +141,7 @@ async def trace_class(req: TraceRequest, class_name: str = ""):
         raise HTTPException(status_code=400, detail="仓库地址格式有误")
 
     try:
-        repo_path = clone_or_pull_repo(req.repo_url)
+        repo_path = await asyncio.to_thread(clone_or_pull_repo, req.repo_url)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"仓库操作失败：{str(e)}")
 
@@ -195,7 +195,7 @@ async def graph_analyze(req: TraceRequest, goal: str = ""):
         goal = f"分析仓库 {req.repo_url}, 找出变更频繁的文件，对关键函数做深度追溯，输出项目活跃度报告"
 
     try:
-        clone_or_pull_repo(req.repo_url)
+        await asyncio.to_thread(clone_or_pull_repo, req.repo_url)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"仓库操作失败：{str(e)}")
 
@@ -248,7 +248,7 @@ async def graph_analyze(req: TraceRequest, goal: str = ""):
 async def repo_files(repo_url: str, path: str = ""):
     """返回仓库目录结构。无 path 时返回顶层，有 path 时返回该路径下的子节点。"""
     try:
-        repo_path = clone_or_pull_repo(repo_url)
+        repo_path = await asyncio.to_thread(clone_or_pull_repo, repo_url)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"仓库操作失败：{str(e)}")
 
@@ -288,7 +288,7 @@ async def repo_files(repo_url: str, path: str = ""):
 async def repo_symbols(repo_url: str, file_path: str):
     """返回指定文件当前 HEAD 的所有函数名和 class 名（使用轻量提取器）。"""
     try:
-        repo_path = clone_or_pull_repo(repo_url)
+        repo_path = await asyncio.to_thread(clone_or_pull_repo, repo_url)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"仓库操作失败：{str(e)}")
 
@@ -313,7 +313,7 @@ async def repo_symbols(repo_url: str, file_path: str):
 async def repo_file_risks(repo_url: str):
     """轻量：返回每个文件的风险等级，用于文件树着色。"""
     try:
-        repo_path = clone_or_pull_repo(repo_url)
+        repo_path = await asyncio.to_thread(clone_or_pull_repo, repo_url)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"仓库操作失败：{str(e)}")
 
@@ -347,7 +347,7 @@ async def repo_file_risks(repo_url: str):
 async def repo_dashboard(repo_url: str):
     """仓库仪表盘数据：概要统计 + 风险分布 + 近期活动。"""
     try:
-        repo_path = clone_or_pull_repo(repo_url)
+        repo_path = await asyncio.to_thread(clone_or_pull_repo, repo_url)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"仓库操作失败：{str(e)}")
 
@@ -401,7 +401,11 @@ async def repo_index_status(repo_url: str):
             await asyncio.sleep(1)
         yield "data: [DONE]\n\n"
 
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # ── "问 Agent" 轻量入口 ──────────────────────────────────
@@ -450,7 +454,7 @@ async def agent_ask(req: AskRequest):
     goal = "\n".join(parts)
 
     try:
-        clone_or_pull_repo(req.repo_url)
+        await asyncio.to_thread(clone_or_pull_repo, req.repo_url)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"仓库操作失败: {str(e)}")
 

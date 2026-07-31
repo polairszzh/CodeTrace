@@ -2,6 +2,7 @@ import os
 import subprocess
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 
@@ -105,15 +106,16 @@ def repo_path_for_url(repo_url: str) -> Path:
 def _repo_size_kb(repo_url: str) -> int | None:
     """GitHub API 查仓库体积（KB）。非 GitHub 或查询失败返回 None。"""
     try:
-        if "github.com" not in repo_url:
+        parsed = urlparse(repo_url)
+        if parsed.hostname != "github.com":
             return None
         cached = _SIZE_CACHE.get(repo_url)
         if cached and time.time() - cached[1] < _SIZE_CACHE_TTL:
             return cached[0]
-        parts = repo_url.rstrip("/").split("/")
-        if len(parts) < 2:
+        path_parts = parsed.path.strip("/").split("/")
+        if len(path_parts) < 2 or not path_parts[0] or not path_parts[1]:
             return None
-        owner, name = parts[-2], parts[-1].replace(".git", "")
+        owner, name = path_parts[0], path_parts[1].replace(".git", "")
         headers = {"Accept": "application/vnd.github+json"}
         token = os.getenv("GITHUB_TOKEN", "")
         if token:

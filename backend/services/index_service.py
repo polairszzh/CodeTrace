@@ -29,6 +29,7 @@ _SCHEMA_VERSION = "2"  # 索引 schema 版本，升级时强制全量重建
 
 _BUILD_THREADS: dict[str, threading.Thread] = {}
 _BUILD_THREADS_LOCK = threading.Lock()
+_STATUS_WRITE_LOCK = threading.Lock()
 
 
 # ── 路径 ──────────────────────────────────────────────
@@ -144,16 +145,17 @@ def _status_path(repo_path: Path) -> Path:
 def _update_build_status(repo_path: Path, **fields) -> bool:
     """原子更新构建状态（status/stage/message/...）。失败静默。"""
     try:
-        path = _status_path(repo_path)
-        os.makedirs(path.parent, exist_ok=True)
-        data = {}
-        if path.exists():
-            data = json.loads(path.read_text(encoding="utf-8"))
-        data.update(fields)
-        data["updated_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-        os.replace(tmp, path)
+        with _STATUS_WRITE_LOCK:
+            path = _status_path(repo_path)
+            os.makedirs(path.parent, exist_ok=True)
+            data = {}
+            if path.exists():
+                data = json.loads(path.read_text(encoding="utf-8"))
+            data.update(fields)
+            data["updated_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, path)
         return True
     except Exception:
         return False
@@ -182,26 +184,32 @@ _STAGE_MESSAGES = {
 
 def _background_build(repo_path: Path):
     name = Path(repo_path).name
-    _update_build_status(repo_path, repo=name, status="running", stage="queued",
-                         message=_STAGE_MESSAGES["queued"])
-
-    def report(stage: str, detail: dict):
-        _update_build_status(
-            repo_path,
-            status="running",
-            stage=stage,
-            message=_STAGE_MESSAGES.get(stage, stage),
-            **detail,
-        )
-
     try:
-        ok = ensure_indexed(repo_path, report=report)
-        stage = "done" if ok else "error"
-        _update_build_status(repo_path, status=stage, stage=stage,
-                             message=_STAGE_MESSAGES[stage])
-    except Exception:
-        _update_build_status(repo_path, status="error", stage="error",
-                             message=_STAGE_MESSAGES["error"])
+        _update_build_status(repo_path, repo=name, status="running", stage="queued",
+                             message=_STAGE_MESSAGES["queued"])
+
+        def report(stage: str, detail: dict):
+            _update_build_status(
+                repo_path,
+                status="running",
+                stage=stage,
+                message=_STAGE_MESSAGES.get(stage, stage),
+                **detail,
+            )
+
+        try:
+            ok = ensure_indexed(repo_path, report=report)
+            stage = "done" if ok else "error"
+            _update_build_status(repo_path, status=stage, stage=stage,
+                                 message=_STAGE_MESSAGES[stage])
+        except Exception:
+            _update_build_status(repo_path, status="error", stage="error",
+                                 message=_STAGE_MESSAGES["error"])
+    finally:
+        # 线程结束清理注册表，避免长期运行残留
+        with _BUILD_THREADS_LOCK:
+            if _BUILD_THREADS.get(name) is threading.current_thread():
+                del _BUILD_THREADS[name]
 
 
 def request_index_build(repo_path: Path) -> bool:
