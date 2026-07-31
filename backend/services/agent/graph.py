@@ -75,8 +75,6 @@ def build_agent(registry: ToolRegistry, llm: LLMService | None = None):
         )
 
     tools_schemas = registry.list_schemas()
-    # 并发工具调用上限：防止并行执行触发限流/资源竞争（每次 Agent 运行独立）
-    tool_semaphore = asyncio.Semaphore(4)
 
     # ── 节点函数 ────────────────────────────────────────────
 
@@ -133,6 +131,8 @@ def build_agent(registry: ToolRegistry, llm: LLMService | None = None):
 
     async def execute_node(state: AgentState) -> dict:
         """并行执行 plan_node 产生的所有工具调用"""
+        # 并发上限：每次执行（单步）创建，避免跨请求/跨事件循环共享信号量
+        tool_semaphore = asyncio.Semaphore(4)
 
         async def _run_one(tc):
             tool_name = tc["function"]["name"]

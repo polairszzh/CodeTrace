@@ -26,6 +26,48 @@ llm = LLMService(
     model=os.getenv("LLM_MODEL", "deepseek-v4-pro")
 )
 
+
+def _build_file_timeline(repo_path, repo_full: str, file_path: str) -> "TraceResponse":
+    """同步构建文件时间线（在 to_thread 中执行，避免阻塞事件循环）。"""
+    commits = get_file_commits(repo_path, file_path)
+    if not commits:
+        raise HTTPException(status_code=404, detail="该文件无变更历史")
+
+    timeline = []
+    for c in commits:
+        pr_number = github.extract_pr_number(c["message"])
+        pr_info = None
+        if pr_number:
+            pr_info = github.get_pr_info(repo_full, pr_number)
+
+        diff_stats = get_commit_diff_stats(repo_path, c["hash"])
+        llm_result = llm.classify_and_summarize(
+            commit_message=c["message"],
+            pr_title=pr_info.get("title") if pr_info else None,
+            pr_description=pr_info.get("body") if pr_info else None,
+        )
+
+        node = TimelineNode(
+            commit_hash=c["hash"],
+            author=c["author"],
+            date=c["date"],
+            message=c["message"],
+            pr_number=pr_number,
+            pr_title=pr_info.get("title") if pr_info else None,
+            change_type=llm_result.get("change_type", "chore"),
+            summary=llm_result.get("summary", c["message"][:50]),
+            diff_stats=DiffStats(**diff_stats),
+        )
+        timeline.append(node)
+
+    return TraceResponse(
+        repo=repo_full,
+        file_path=file_path,
+        timeline=timeline,
+        commit_count=len(timeline),
+    )
+
+
 @router.post("/trace", response_model=TraceResponse)
 async def trace_file(req: TraceRequest):
     """
@@ -50,46 +92,9 @@ async def trace_file(req: TraceRequest):
         repo_path = await asyncio.to_thread(clone_or_pull_repo, req.repo_url)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"仓库操作失败: {str(e)}")
-    
-    # 3. 获取文件 commit 历史
-    commits = get_file_commits(repo_path, req.file_path)
-    if not commits:
-        raise HTTPException(status_code=404, detail="该文件无变更历史")
-    
-    # 4. 构建 timeline
-    timeline = []
-    for c in commits:
-        pr_number = github.extract_pr_number(c["message"])
-        pr_info = None
-        if pr_number:
-            pr_info = github.get_pr_info(repo_full, pr_number)
-        
-        diff_stats = get_commit_diff_stats(repo_path, c["hash"])
-        llm_result = llm.classify_and_summarize(
-            commit_message=c["message"],
-            pr_title=pr_info.get("title") if pr_info else None,
-            pr_description=pr_info.get("body") if pr_info else None
-        )
 
-        node = TimelineNode(
-            commit_hash=c["hash"],
-            author=c["author"],
-            date=c["date"],
-            message=c["message"],
-            pr_number=pr_number,
-            pr_title=pr_info.get("title") if pr_info else None,
-            change_type=llm_result.get("change_type", "chore"),
-            summary=llm_result.get("summary", c["message"][:50]),
-            diff_stats=DiffStats(**diff_stats)
-        )
-        timeline.append(node)
-
-    return TraceResponse(
-        repo=repo_full,
-        file_path=req.file_path,
-        timeline=timeline,
-        commit_count=len(timeline),
-    )
+    # 3-4. 构建 timeline（同步 IO + LLM，放线程池执行）
+    return await asyncio.to_thread(_build_file_timeline, repo_path, repo_full, req.file_path)
 
 @router.post("/trace/function")
 async def trace_function(req: TraceRequest, function_name: str = ""):
