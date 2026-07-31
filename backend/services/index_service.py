@@ -24,6 +24,7 @@ from pathlib import Path
 _FRESH_CACHE: dict[Path, tuple[bool, float]] = {}
 _FRESH_TTL = 30.0  # 秒，避免每次请求都跑 rev-parse
 _PR_CACHE_TTL = 7 * 24 * 3600  # PR 信息缓存 7 天
+_SCHEMA_VERSION = "2"  # 索引 schema 版本，升级时强制全量重建
 
 
 # ── 路径 ──────────────────────────────────────────────
@@ -84,6 +85,13 @@ CREATE TABLE IF NOT EXISTS symbols(
     line INTEGER,
     PRIMARY KEY(file, name, kind)
 );
+CREATE TABLE IF NOT EXISTS renames(
+    file TEXT,
+    prev_file TEXT,
+    commit_hash TEXT,
+    PRIMARY KEY(file, commit_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_renames_prev ON renames(prev_file);
 CREATE TABLE IF NOT EXISTS pr_cache(
     repo TEXT,
     pr_number INTEGER,
@@ -143,16 +151,22 @@ def _meta_value(con: sqlite3.Connection, key: str, default=None):
 
 
 def _is_fresh(db: Path, head: str | None) -> bool:
-    """库存在且记录的 head_hash 与当前 HEAD 一致。"""
+    """库存在、head_hash 与当前 HEAD 一致，且 schema 版本匹配。"""
     if head is None or not db.exists():
         return False
     try:
         con = sqlite3.connect(db, timeout=10)
         try:
-            row = con.execute("SELECT value FROM meta WHERE key = 'head_hash'").fetchone()
+            head_row = con.execute("SELECT value FROM meta WHERE key = 'head_hash'").fetchone()
+            ver_row = con.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
         finally:
             con.close()
-        return bool(row) and row[0] == head
+        return (
+            bool(head_row)
+            and head_row[0] == head
+            and bool(ver_row)
+            and ver_row[0] == _SCHEMA_VERSION
+        )
     except Exception:
         return False
 
@@ -209,6 +223,25 @@ def _fill_from_numstat(repo_path: Path, con: sqlite3.Connection, extra_args: lis
                 av, dv = int(a or 0), int(d or 0)
             except ValueError:
                 continue
+            if " => " in f:
+                # 重命名行（git 默认开启 rename 检测）：拆成两条事实行
+                # （旧路径 0/0，新路径记真实变更行数），同时产出 rename 边供 --follow 等价查询
+                old, new = f.split(" => ", 1)
+                old = old.strip().strip('"')
+                new = new.strip().strip('"')
+                con.execute(
+                    "INSERT OR IGNORE INTO file_commits VALUES (?,?,?,?)",
+                    (old, current[0], 0, 0),
+                )
+                con.execute(
+                    "INSERT OR IGNORE INTO file_commits VALUES (?,?,?,?)",
+                    (new, current[0], av, dv),
+                )
+                con.execute(
+                    "INSERT OR IGNORE INTO renames VALUES (?,?,?)",
+                    (new, old, current[0]),
+                )
+                continue
             con.execute(
                 "INSERT OR IGNORE INTO file_commits VALUES (?,?,?,?)",
                 (f, current[0], av, dv),
@@ -258,13 +291,14 @@ def _refresh_symbols(repo_path: Path, con: sqlite3.Connection, files: list[str])
 def _write_meta(con: sqlite3.Connection, head: str):
     now = datetime.now().astimezone().isoformat(timespec="seconds")
     con.execute("INSERT OR REPLACE INTO meta VALUES ('head_hash', ?)", (head,))
+    con.execute("INSERT OR REPLACE INTO meta VALUES ('schema_version', ?)", (_SCHEMA_VERSION,))
     con.execute("INSERT OR REPLACE INTO meta VALUES ('indexed_at', ?)", (now,))
     con.commit()
 
 
 def _build_full(repo_path: Path, con: sqlite3.Connection, head: str):
     con.executescript(_SCHEMA)
-    for table in ("file_commits", "commits", "files", "symbols"):
+    for table in ("file_commits", "commits", "files", "symbols", "renames"):
         con.execute(f"DELETE FROM {table}")
     _fill_from_numstat(repo_path, con, ["--reverse"])
     files = _refresh_files(repo_path, con)
@@ -313,9 +347,10 @@ def ensure_indexed(repo_path: Path) -> bool:
             try:
                 con.executescript(_SCHEMA)
                 old_head = _meta_value(con, "head_hash")
-                if old_head and not _build_incremental(repo_path, con, old_head, head):
+                old_ver = _meta_value(con, "schema_version")
+                if old_head and old_ver == _SCHEMA_VERSION and not _build_incremental(repo_path, con, old_head, head):
                     _build_full(repo_path, con, head)
-                elif not old_head:
+                elif not old_head or old_ver != _SCHEMA_VERSION:
                     _build_full(repo_path, con, head)
             finally:
                 con.close()
@@ -331,21 +366,50 @@ def ensure_indexed(repo_path: Path) -> bool:
 
 
 def get_file_commits(repo_path: Path, file_path: str) -> list[dict]:
+    """文件 commit 历史（等价 git log --follow：沿时间向后跟随重命名）。"""
     con = _connect(_db_path(repo_path))
     try:
-        rows = con.execute(
-            """SELECT c.hash, c.author, c.date, c.message
-               FROM file_commits fc JOIN commits c ON fc.commit_hash = c.hash
-               WHERE fc.file = ?
-               ORDER BY c.date DESC, c.hash DESC""",
-            (file_path,),
-        ).fetchall()
-        return [
-            {"hash": r[0], "author": r[1], "date": r[2], "message": r[3]}
-            for r in rows
-        ]
+        commits = {}
+
+        def _collect(f: str, boundary: str | None = None):
+            if boundary is None:
+                rows = con.execute(
+                    """SELECT c.hash, c.author, c.date, c.message
+                       FROM file_commits fc JOIN commits c ON fc.commit_hash = c.hash
+                       WHERE fc.file = ?""",
+                    (f,),
+                ).fetchall()
+            else:
+                rows = con.execute(
+                    """SELECT c.hash, c.author, c.date, c.message
+                       FROM file_commits fc JOIN commits c ON fc.commit_hash = c.hash
+                       WHERE fc.file = ? AND c.date < ?""",
+                    (f, boundary),
+                ).fetchall()
+            for r in rows:
+                commits.setdefault(r[0], {"hash": r[0], "author": r[1], "date": r[2], "message": r[3]})
+
+        _collect(file_path)
+        seen_paths = {file_path}
+        queue = [file_path]
+        while queue:
+            f = queue.pop()
+            # 向后跟随：file 由 prev_file 改名而来 → 取改名 commit 之前的 prev_file 历史
+            for ch, prev in con.execute(
+                "SELECT commit_hash, prev_file FROM renames WHERE file = ?", (f,)
+            ).fetchall():
+                if prev in seen_paths:
+                    continue
+                seen_paths.add(prev)
+                boundary = con.execute(
+                    "SELECT date FROM commits WHERE hash = ?", (ch,)
+                ).fetchone()
+                if boundary:
+                    _collect(prev, boundary[0])
+                queue.append(prev)
     finally:
         con.close()
+    return sorted(commits.values(), key=lambda c: (c["date"], c["hash"]), reverse=True)
 
 
 def get_commit_diff_stats(repo_path: Path, commit_hash: str) -> dict:

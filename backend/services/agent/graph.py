@@ -247,7 +247,7 @@ def build_agent(registry: ToolRegistry, llm: LLMService | None = None):
     return graph.compile()
 
 
-def run_agent(
+async def run_agent(
     registry: ToolRegistry,
     goal: str,
     repo_url: str = "",
@@ -266,6 +266,8 @@ def run_agent(
 
     Returns:
         dict: {steps, findings, final_report, step_count, error}
+
+    注意：async 接口，调用方必须 await；不要在事件循环里用 asyncio.run 包装。
     """
     effective_prompt = system_prompt or SYSTEM_PROMPT
     app = build_agent(registry)
@@ -288,8 +290,7 @@ def run_agent(
         "final_report": None,
     }
 
-    result = app.ainvoke(initial)
-    result = asyncio.run(result)
+    result = await app.ainvoke(initial)
 
     return {
         "steps": result.get("findings", []),

@@ -199,9 +199,7 @@ async def graph_analyze(req: TraceRequest, goal: str = ""):
         raise HTTPException(status_code=500, detail=f"仓库操作失败：{str(e)}")
 
     # 并行：主 Agent 报告 + 耦合分析
-    report_task = asyncio.to_thread(
-        run_agent, registry, goal, repo_url=req.repo_url, max_steps=15
-    )
+    report_task = run_agent(registry, goal, repo_url=req.repo_url, max_steps=15)
     coupling_task = run_coupling_analysis(req.repo_url)
 
     report_raw, coupling_raw = await asyncio.gather(

@@ -199,6 +199,48 @@ def test_incremental_update(local_repo):
     assert {f["name"] for f in symbols["functions"]} == {"gamma", "zeta"}
 
 
+def test_rename_follow_matches_git(tmp_path, monkeypatch):
+    """重命名场景：索引 get_file_commits 与 git log --follow 谱系一致（双向跟随）。"""
+    monkeypatch.setenv("CODETRACE_INDEX_DIR", str(tmp_path / "index"))
+    index_service._FRESH_CACHE.clear()
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Tester"], cwd=repo, check=True, capture_output=True)
+
+    (repo / "a.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+    _commit(repo, "c1", _date(40))
+    (repo / "b.py").write_text("def beta():\n    return 2\n", encoding="utf-8")
+    _commit(repo, "c2", _date(30))
+    subprocess.run(["git", "mv", "a.py", "d.py"], cwd=repo, check=True, capture_output=True)
+    _commit(repo, "c3 rename", _date(20))
+    (repo / "d.py").write_text(
+        "def alpha():\n    return 1\n\ndef delta():\n    return 3\n", encoding="utf-8"
+    )
+    _commit(repo, "c4", _date(10))
+
+    assert index_service.ensure_indexed(repo)
+    index_service._FRESH_CACHE.clear()
+
+    monkeypatch.setattr(index_service, "index_fresh", lambda p: False)
+    git_d = git_service.get_file_commits(repo, "d.py")
+    git_a = git_service.get_file_commits(repo, "a.py")
+    monkeypatch.setattr(index_service, "index_fresh", lambda p: True)
+
+    idx_d = index_service.get_file_commits(repo, "d.py")
+    idx_a = index_service.get_file_commits(repo, "a.py")
+
+    # d.py（新名）：c3(改名) + c1(旧名创建) + c4(改名后修改)；--follow 不向前追，a.py 只有 c1/c3
+    assert len(git_d) == 3 and len(git_a) == 2
+    assert [c["hash"] for c in idx_d] == [c["hash"] for c in git_d]
+    assert [c["hash"] for c in idx_a] == [c["hash"] for c in git_a]
+    assert {tuple(sorted(c.items())) for c in idx_d} == {
+        tuple(sorted(c.items())) for c in git_d
+    }
+
+
 def test_stale_index_falls_back_to_git(local_repo):
     assert index_service.ensure_indexed(local_repo)
     index_service._FRESH_CACHE.clear()
