@@ -1,5 +1,6 @@
 """LangGraph 驱动的 Agent 规划层 — 替代文本协议 ReAct 循环"""
 
+import asyncio
 import json
 import os
 from typing import TypedDict
@@ -29,7 +30,8 @@ SYSTEM_PROMPT = """你是一个代码仓库分析 Agent。你的任务是使用�
 3. 关注架构问题：寻找跨文件迁移、高频变更、bug 集中的区域
 
 规则：
-- 一次调用一个工具，根据前一步结果决定下一步做什么
+- 当多个工具之间没有依赖关系时，一次响应中可以并行调用它们（如同时查看 diff + 读取文件 + 查询 PR 信息）
+- 当工具之间有依赖时（如先查 commit 列表，再根据某个 commit 查 diff），分步调用
 - 当收集足够信息后，停止调用工具，输出最终报告
 - 通常需要 5-10 步才能形成有意义的结论
 - 使用中文输出最终报告
@@ -127,17 +129,10 @@ def build_agent(registry: ToolRegistry, llm: LLMService | None = None):
 
         return updates
 
-    def execute_node(state: AgentState) -> dict:
-        """执行 plan_node 产生的工具调用"""
-        last_msg = state["messages"][-1]
-        tool_calls = last_msg.get("tool_calls", [])
-        if not tool_calls:
-            return {}
+    async def execute_node(state: AgentState) -> dict:
+        """并行执行 plan_node 产生的所有工具调用"""
 
-        new_messages = list(state["messages"])
-        new_findings = list(state["findings"])
-
-        for tc in tool_calls:
+        async def _run_one(tc):
             tool_name = tc["function"]["name"]
             try:
                 args = json.loads(tc["function"]["arguments"])
@@ -149,18 +144,30 @@ def build_agent(registry: ToolRegistry, llm: LLMService | None = None):
                 result = {"error": f"工具不存在: {tool_name}"}
             else:
                 try:
-                    result = tool.execute(**args)
+                    result = await asyncio.to_thread(tool.execute, **args)
                 except Exception as e:
                     result = {"error": str(e)}
 
             record = {"tool": tool_name, "args": args, "result": result}
-            new_findings.append(record)
-
-            new_messages.append({
+            tool_msg = {
                 "role": "tool",
                 "tool_call_id": tc["id"],
                 "content": json.dumps(result, ensure_ascii=False, default=str)[:3000],
-            })
+            }
+            return record, tool_msg
+
+        last_msg = state["messages"][-1]
+        tool_calls = last_msg.get("tool_calls", [])
+        if not tool_calls:
+            return {}
+
+        results = await asyncio.gather(*[_run_one(tc) for tc in tool_calls])
+
+        new_messages = list(state["messages"])
+        new_findings = list(state["findings"])
+        for record, tool_msg in results:
+            new_findings.append(record)
+            new_messages.append(tool_msg)
 
         return {"messages": new_messages, "findings": new_findings}
 
@@ -281,7 +288,8 @@ def run_agent(
         "final_report": None,
     }
 
-    result = app.invoke(initial)
+    result = app.ainvoke(initial)
+    result = asyncio.run(result)
 
     return {
         "steps": result.get("findings", []),

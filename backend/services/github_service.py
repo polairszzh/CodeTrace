@@ -1,6 +1,8 @@
 import re
 import httpx
 
+from services.index_service import get_cached_pr, set_cached_pr
+
 GITHUB_API_URL = "https://api.github.com"
 
 
@@ -36,18 +38,25 @@ class GitHubClient:
         Returns:
             dict | None: 如果找到 PR，返回其信息字典；否则返回 None。
         """
+        # 索引缓存优先，避免重复请求 GitHub API
+        cached = get_cached_pr(repo_full, pr_number)
+        if cached is not None:
+            return cached
+
         url = f"{GITHUB_API_URL}/repos/{repo_full}/pulls/{pr_number}"
         try:
             resp = httpx.get(url, headers=self.headers, timeout=15)
             resp.raise_for_status()
             data = resp.json()
-            return {
+            result = {
                 "title": data.get("title", ""),
                 "body": data.get("body", ""),
                 "state": data.get("state", ""),
                 "author": data.get("user", {}).get("login", ""),
                 "created_at": data.get("created_at", ""),
             }
+            set_cached_pr(repo_full, pr_number, result)
+            return result
         except Exception as e:
             return None
         
