@@ -475,7 +475,7 @@ def test_index_status_sse_not_started(local_repo, monkeypatch):
 
     resp = client.get(
         "/api/repo/index-status?repo_url=https://github.com/owner/repo.git",
-        timeout=15,
+        timeout=30,
     )
     assert resp.status_code == 200
     body = resp.text

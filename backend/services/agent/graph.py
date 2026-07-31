@@ -3,11 +3,15 @@
 import asyncio
 import json
 import os
+import threading
 from typing import TypedDict
 
 from langgraph.graph import StateGraph, END
 from services.agent.tool_registry import ToolRegistry
 from services.llm_service import LLMService
+
+# 进程级工具并发上限（跨 Agent 运行共享，防限流/资源峰值）
+_GLOBAL_TOOL_LIMIT = threading.BoundedSemaphore(8)
 
 
 class AgentState(TypedDict):
@@ -142,14 +146,15 @@ def build_agent(registry: ToolRegistry, llm: LLMService | None = None):
                 args = {}
 
             async with tool_semaphore:
-                tool = registry.get(tool_name)
-                if not tool:
-                    result = {"error": f"工具不存在: {tool_name}"}
-                else:
-                    try:
-                        result = await asyncio.to_thread(tool.execute, **args)
-                    except Exception as e:
-                        result = {"error": str(e)}
+                with _GLOBAL_TOOL_LIMIT:
+                    tool = registry.get(tool_name)
+                    if not tool:
+                        result = {"error": f"工具不存在: {tool_name}"}
+                    else:
+                        try:
+                            result = await asyncio.to_thread(tool.execute, **args)
+                        except Exception as e:
+                            result = {"error": str(e)}
 
             record = {"tool": tool_name, "args": args, "result": result}
             tool_msg = {

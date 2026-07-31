@@ -31,7 +31,7 @@ def _build_file_timeline(repo_path, repo_full: str, file_path: str) -> "TraceRes
     """同步构建文件时间线（在 to_thread 中执行，避免阻塞事件循环）。"""
     commits = get_file_commits(repo_path, file_path)
     if not commits:
-        raise HTTPException(status_code=404, detail="该文件无变更历史")
+        return None  # 无历史由路由层抛 404，避免依赖线程异常传播
 
     timeline = []
     for c in commits:
@@ -94,7 +94,10 @@ async def trace_file(req: TraceRequest):
         raise HTTPException(status_code=500, detail=f"仓库操作失败: {str(e)}")
 
     # 3-4. 构建 timeline（同步 IO + LLM，放线程池执行）
-    return await asyncio.to_thread(_build_file_timeline, repo_path, repo_full, req.file_path)
+    result = await asyncio.to_thread(_build_file_timeline, repo_path, repo_full, req.file_path)
+    if result is None:
+        raise HTTPException(status_code=404, detail="该文件无变更历史")
+    return result
 
 @router.post("/trace/function")
 async def trace_function(req: TraceRequest, function_name: str = ""):
@@ -394,14 +397,20 @@ async def repo_index_status(repo_url: str):
             yield "data: [DONE]\n\n"
             return
         deadline = time.time() + 300
+        not_started_deadline = time.time() + 15
         while True:
             status = get_index_status(repo_path)
             fresh = index_fresh(repo_path)
             if status is None:
-                # 索引尚未启动：给后台线程写初始状态一点时间，仍无则视为未开始直接结束
-                await asyncio.sleep(2)
-                status = get_index_status(repo_path)
-                fresh = index_fresh(repo_path)
+                # 索引尚未启动：给后台线程写初始状态留出窗口，超时仍无则视为未开始结束
+                while (
+                    status is None
+                    and not fresh
+                    and time.time() < not_started_deadline
+                ):
+                    await asyncio.sleep(2)
+                    status = get_index_status(repo_path)
+                    fresh = index_fresh(repo_path)
                 if status is None and not fresh:
                     yield f"data: {json.dumps({'repo': repo_url, 'fresh': False, 'status': 'not_started', 'message': '索引尚未启动'}, ensure_ascii=False)}\n\n"
                     yield "data: [DONE]\n\n"
