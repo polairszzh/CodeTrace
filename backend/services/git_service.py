@@ -32,7 +32,8 @@ def _acquire_lock(name: str, timeout: float = 30) -> bool:
     """获取 repo 级别锁。返回是否成功。"""
     try:
         os.makedirs(_LOCK_DIR, exist_ok=True)
-    except Exception:
+    except Exception as e:
+        logger.warning("锁目录创建失败 %s: %s", _LOCK_DIR, e)
         return False
     lock_path = _LOCK_DIR / name.replace("/", "_").replace(":", "_")
     deadline = time.time() + timeout
@@ -42,6 +43,7 @@ def _acquire_lock(name: str, timeout: float = 30) -> bool:
             return True
         except FileExistsError:
             time.sleep(0.2)
+    logger.warning("获取仓库锁超时 name=%s", name)
     return False
 
 
@@ -153,7 +155,13 @@ def repo_name_for_url(repo_url: str) -> str:
     try:
         parsed = urlparse(repo_url)
         host = (parsed.hostname or "git").lower()
-        path = parsed.path.strip("/").removesuffix(".git").rstrip("/")
+        if not parsed.scheme and "@" in repo_url and ":" in repo_url:
+            # SSH 形式：git@github.com:owner/repo.git
+            userhost, _, ssh_path = repo_url.partition(":")
+            host = userhost.rsplit("@", 1)[-1].lower()
+            path = ssh_path.strip("/").removesuffix(".git").rstrip("/")
+        else:
+            path = parsed.path.strip("/").removesuffix(".git").rstrip("/")
         raw = f"{host}_{path}" if path else host
     except Exception:
         raw = repo_url.rstrip("/").split("/")[-1].replace(".git", "")

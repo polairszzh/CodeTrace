@@ -334,6 +334,8 @@ def test_repo_path_sanitized(tmp_path, monkeypatch):
     assert git_service.repo_name_for_url("https://github.com/bob/foo.git") == "github.com_bob_foo"
     assert git_service.repo_name_for_url("https://github.com/alice/foo.git") != \
         git_service.repo_name_for_url("https://github.com/bob/foo.git")
+    # SSH 形式 URL 同样得到可读命名
+    assert git_service.repo_name_for_url("git@github.com:alice/foo.git") == "github.com_alice_foo"
     # 目录穿越与空名安全
     assert "/" not in git_service.repo_name_for_url("https://github.com/o/..")
     assert git_service.repo_name_for_url("https://github.com/o/..") != ".."
