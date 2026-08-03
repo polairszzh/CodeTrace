@@ -13,6 +13,7 @@ from services.git_service import (
     get_recent_commit_groups,
     get_co_change_trends,
     get_file_change_context,
+    repo_full_from_url,
 )
 from services.ast_service import trace_function_across_commits, extract_functions, get_language_for_file
 from services.github_service import GitHubClient
@@ -24,9 +25,8 @@ github = GitHubClient(token=os.getenv("GITHUB_TOKEN", ""))
 registry = ToolRegistry()
 
 def _extract_repo_full(repo_url: str) -> str:
-    """从 URL 提取 owner/repo"""
-    parts = repo_url.rstrip("/").split("/")
-    return f"{parts[-2]}/{parts[-1].replace('.git', '')}"
+    """从 URL 提取 owner/repo（https/SSH 通用）"""
+    return repo_full_from_url(repo_url) or ""
 
 
 registry.register(Tool(

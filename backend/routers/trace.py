@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from models.schemas import TraceRequest, TraceResponse, TimelineNode, DiffStats
-from services.git_service import clone_or_pull_repo, repo_path_for_url, get_file_commits, get_commit_diff_stats, list_files_at_commit, get_file_content_at_commit, get_file_commit_counts, get_repo_summary, get_git_graph
+from services.git_service import clone_or_pull_repo, repo_path_for_url, repo_full_from_url, get_file_commits, get_commit_diff_stats, list_files_at_commit, get_file_content_at_commit, get_file_commit_counts, get_repo_summary, get_git_graph
 from services.github_service import GitHubClient
 from services.llm_service import LLMService
 from services.ast_service import trace_function_across_commits, trace_class_across_commits, extract_symbols_fast
@@ -98,11 +98,8 @@ async def trace_file(req: TraceRequest):
         TraceResponse: 包含时间线和提交统计信息的响应体。
     """
     # 1. 解析 repo_url
-    try:
-        parts = req.repo_url.rstrip("/").split("/")
-        repo_owner, repo_name = parts[-2], parts[-1].replace(".git", "")
-        repo_full = f"{repo_owner}/{repo_name}" 
-    except Exception:
+    repo_full = repo_full_from_url(req.repo_url)
+    if not repo_full:
         raise HTTPException(status_code=400, detail="仓库格式地址错误")
     
     # 2. clone/pull 仓库
@@ -122,11 +119,8 @@ async def trace_function(req: TraceRequest, function_name: str = ""):
     if not function_name:
         raise HTTPException(status_code=400, detail="请提供函数名")
     
-    try:
-        parts = req.repo_url.rstrip("/").split("/")
-        repo_owner, repo_name = parts[-2], parts[-1].replace(".git", "")
-        repo_full = f"{repo_owner}/{repo_name}"
-    except Exception:
+    repo_full = repo_full_from_url(req.repo_url)
+    if not repo_full:
         raise HTTPException(status_code=400, detail="仓库地址格式有误")
     
     try:
@@ -161,11 +155,8 @@ async def trace_class(req: TraceRequest, class_name: str = ""):
     if not class_name:
         raise HTTPException(status_code=400, detail="请提供 class 名")
 
-    try:
-        parts = req.repo_url.rstrip("/").split("/")
-        repo_owner, repo_name = parts[-2], parts[-1].replace(".git", "")
-        repo_full = f"{repo_owner}/{repo_name}"
-    except Exception:
+    repo_full = repo_full_from_url(req.repo_url)
+    if not repo_full:
         raise HTTPException(status_code=400, detail="仓库地址格式有误")
 
     try:
@@ -419,11 +410,8 @@ async def repo_git_graph(repo_url: str):
 @router.get("/repo/pr-info")
 async def repo_pr_info(repo_url: str, pr_number: int):
     """PR 详情（标题/正文/状态），供 Git Graph 展开面板应用内查看。"""
-    try:
-        parts = repo_url.rstrip("/").split("/")
-        repo_owner, repo_name = parts[-2], parts[-1].replace(".git", "")
-        repo_full = f"{repo_owner}/{repo_name}"
-    except Exception:
+    repo_full = repo_full_from_url(repo_url)
+    if not repo_full:
         raise HTTPException(status_code=400, detail="仓库地址格式错误")
     info = await asyncio.to_thread(github.get_pr_info, repo_full, pr_number)
     if info is None:

@@ -89,7 +89,9 @@ def _maybe_cleanup():
 def _remote_head(repo_url: str) -> str | None:
     """获取远程仓库 HEAD 的 commit hash。返回 None 表示远程不可达。"""
     try:
-        result = _run_git_with_proxy_fallback(["ls-remote", repo_url, "HEAD"], timeout=15)
+        result = _run_git_with_proxy_fallback(
+            ["ls-remote", repo_url, "HEAD"], timeout=8, retry_on_timeout=False,
+        )
         return result.stdout.split()[0] if result.stdout.strip() else None
     except Exception as e:
         logger.warning("git ls-remote 失败 repo=%s: %s", repo_url, e)
@@ -105,7 +107,7 @@ def _git_net_args(extra_args: list[str]) -> list[str]:
 
 
 def _run_git_with_proxy_fallback(
-    extra_args: list[str], cwd=None, timeout: int = 120
+    extra_args: list[str], cwd=None, timeout: int = 120, retry_on_timeout: bool = True
 ) -> subprocess.CompletedProcess:
     """
     运行 git 网络命令（兼容不同用户的代理环境）：
@@ -113,14 +115,20 @@ def _run_git_with_proxy_fallback(
     2. 失败后清空代理直连重试一次（覆盖代理配置错误/代理未运行但可直连的场景）。
     """
     first = _git_net_args(extra_args)
+    timed_out = False
     try:
         r = subprocess.run(
             first, cwd=cwd, capture_output=True, text=True, encoding="utf-8", timeout=timeout,
         )
         if r.returncode == 0:
             return r
+    except subprocess.TimeoutExpired:
+        timed_out = True
     except Exception:
         pass
+    if timed_out and not retry_on_timeout:
+        # 首轮已超时且调用方不要求重试（如 ls-remote）：直接抛，避免代理黑洞翻倍延迟
+        raise subprocess.TimeoutExpired(first, timeout=timeout)
     direct = ["git", "-c", "http.proxy=", "-c", "https.proxy="] + extra_args
     r2 = subprocess.run(
         direct, cwd=cwd, capture_output=True, text=True, encoding="utf-8", timeout=timeout,
@@ -172,6 +180,22 @@ def repo_name_for_url(repo_url: str) -> str:
         import hashlib
         name = name[:40] + "_" + hashlib.md5(name.encode("utf-8")).hexdigest()[:12]
     return name
+
+
+def repo_full_from_url(repo_url: str) -> str | None:
+    """从 https/SSH URL 提取 owner/repo（GitHub API 用），失败返回 None。"""
+    try:
+        if "@" in repo_url and ":" in repo_url and not urlparse(repo_url).scheme:
+            # SSH 形式：git@github.com:owner/repo.git
+            path = repo_url.partition(":")[2].strip("/").removesuffix(".git")
+        else:
+            path = urlparse(repo_url).path.strip("/").removesuffix(".git")
+        parts = [p for p in path.split("/") if p]
+        if len(parts) >= 2:
+            return f"{parts[0]}/{parts[1]}"
+    except Exception:
+        pass
+    return None
 
 
 def _legacy_cache_path(repo_url: str) -> Path:

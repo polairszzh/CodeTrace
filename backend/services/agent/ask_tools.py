@@ -6,6 +6,7 @@ from services.git_service import (
     get_file_commits,
     get_commit_diff_content,
     get_file_content_at_commit,
+    repo_full_from_url,
 )
 from services.ast_service import trace_function_across_commits
 from services.github_service import GitHubClient
@@ -16,8 +17,8 @@ ask_registry = ToolRegistry()
 
 
 def _extract_repo_full(repo_url: str) -> str:
-    parts = repo_url.rstrip("/").split("/")
-    return f"{parts[-2]}/{parts[-1].replace('.git', '')}"
+    """从 URL 提取 owner/repo（https/SSH 通用）"""
+    return repo_full_from_url(repo_url) or ""
 
 
 ask_registry.register(Tool(

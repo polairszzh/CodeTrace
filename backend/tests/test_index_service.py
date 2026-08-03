@@ -381,7 +381,7 @@ def test_remote_head_proxy_fallback(monkeypatch):
     def fake_run(cmd, **kw):
         calls.append(cmd)
         if len(calls) == 1:
-            raise subprocess.TimeoutExpired(cmd, timeout=15)
+            raise OSError("connection refused")
         return FakeResult()
 
     monkeypatch.setattr(git_service.subprocess, "run", fake_run)
@@ -390,6 +390,30 @@ def test_remote_head_proxy_fallback(monkeypatch):
     assert len(calls) == 2
     # 第二次必须是直连（显式清空代理）
     assert calls[1][1] == "-c" and calls[1][2] == "http.proxy="
+
+
+def test_remote_head_no_retry_on_timeout(monkeypatch):
+    """ls-remote 首轮超时（代理黑洞）不再重试，避免延迟翻倍。"""
+    monkeypatch.delenv("CODETRACE_GIT_PROXY", raising=False)
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        raise subprocess.TimeoutExpired(cmd, timeout=8)
+
+    monkeypatch.setattr(git_service.subprocess, "run", fake_run)
+    head = git_service._remote_head("https://github.com/owner/repo.git")
+    assert head is None
+    assert len(calls) == 1
+
+
+def test_repo_full_from_url():
+    """owner/repo 提取：https 与 SSH 形式通用。"""
+    assert git_service.repo_full_from_url("https://github.com/alice/foo.git") == "alice/foo"
+    assert git_service.repo_full_from_url("git@github.com:alice/foo.git") == "alice/foo"
+    assert git_service.repo_full_from_url("https://github.com/alice/foo") == "alice/foo"
+    assert git_service.repo_full_from_url("https://github.com/") is None
+    assert git_service.repo_full_from_url("") is None
 
 
 def test_git_proxy_env_override(monkeypatch):
