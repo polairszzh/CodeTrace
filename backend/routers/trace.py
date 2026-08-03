@@ -40,6 +40,7 @@ def _build_file_timeline(
         return None  # 无历史由路由层抛 404，避免依赖线程异常传播
 
     timeline = []
+    warnings = []
     for c in commits:
         pr_number = github.extract_pr_number(c["message"])
         pr_info = None
@@ -48,12 +49,14 @@ def _build_file_timeline(
                 pr_info = github.get_pr_info(repo_full, pr_number)
             except Exception as e:
                 logger.warning("PR 信息获取失败 repo=%s pr=%s: %s", repo_full, pr_number, e)
+                warnings.append(f"PR #{pr_number} 信息获取失败，已跳过")
 
         try:
             diff_stats = get_commit_diff_stats(repo_path, c["hash"])
         except Exception as e:
             logger.warning("diff 统计失败 hash=%s: %s", c["hash"], e)
             diff_stats = {"additions": 0, "deletions": 0, "files_changed": 0}
+            warnings.append(f"提交 {c['hash'][:7]} diff 统计失败，按 0 处理")
 
         try:
             llm_result = llm.classify_and_summarize(
@@ -64,6 +67,7 @@ def _build_file_timeline(
         except Exception as e:
             logger.warning("LLM 分类失败 hash=%s: %s", c["hash"], e)
             llm_result = {}
+            warnings.append(f"提交 {c['hash'][:7]} LLM 分类失败，使用默认摘要")
 
         node = TimelineNode(
             commit_hash=c["hash"],
@@ -83,6 +87,7 @@ def _build_file_timeline(
         file_path=file_path,
         timeline=timeline,
         commit_count=len(timeline),
+        warnings=warnings,
     )
 
 

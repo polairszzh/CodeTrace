@@ -144,6 +144,7 @@ def test_build_file_timeline_degrades_on_errors(tmp_path, monkeypatch):
     result = trace_module._build_file_timeline(repo, "alice/repo", "a.py")
     assert result is not None
     assert result.commit_count >= 1
+    assert len(result.warnings) >= 1  # LLM/PR 失败被记录为降级警告
     for node in result.timeline:
         assert node.change_type == "chore"
         assert node.summary  # 降级为 message 截断

@@ -31,3 +31,4 @@ class TraceResponse(BaseModel):
     file_path: str
     timeline: list[TimelineNode]
     commit_count: int
+    warnings: list[str] = []
