@@ -420,7 +420,11 @@ async def repo_pr_info(repo_url: str, pr_number: int):
     repo_full = repo_full_from_url(repo_url)
     if not repo_full:
         raise HTTPException(status_code=400, detail="仓库地址格式错误")
-    info = await asyncio.to_thread(github.get_pr_info, repo_full, pr_number)
+    try:
+        info = await asyncio.to_thread(github.get_pr_info, repo_full, pr_number)
+    except Exception as e:
+        logger.warning("PR 查询异常 repo=%s pr=%s: %s", repo_full, pr_number, e)
+        raise HTTPException(status_code=502, detail=f"PR #{pr_number} 查询失败：{e}")
     if info is None:
         raise HTTPException(status_code=404, detail=f"PR #{pr_number} 信息获取失败")
     return info
