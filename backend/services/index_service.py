@@ -44,6 +44,11 @@ def _index_dir() -> Path:
     return Path(override) if override else _cache_root() / "index"
 
 
+def index_dir() -> Path:
+    """索引根目录（公开访问，供追踪等扩展模块使用）。"""
+    return _index_dir()
+
+
 def _safe_name(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", name)
 

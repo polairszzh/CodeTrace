@@ -13,6 +13,7 @@ from services.github_service import GitHubClient
 from services.llm_service import LLMService
 from services.ast_service import trace_function_across_commits, trace_class_across_commits, extract_symbols_fast
 from services.index_service import get_symbols as index_get_symbols, index_fresh, get_index_status
+from services import tracking_service
 from services.agent import registry
 from services.agent.planner import AgentPlanner
 from services.agent.graph import run_agent, run_agent_stream
@@ -480,6 +481,24 @@ async def repo_index_status(repo_url: str):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@router.get("/repo/tracking")
+async def repo_tracking(repo_url: str):
+    """持续追踪：最新增量报告 + 快照状态；head 落后时后台触发刷新。"""
+    if not repo_full_from_url(repo_url):
+        raise HTTPException(status_code=400, detail="仓库地址格式错误")
+    try:
+        repo_path = await asyncio.to_thread(clone_or_pull_repo, repo_url)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"仓库操作失败：{str(e)}")
+    data = await asyncio.to_thread(tracking_service.get_tracking, repo_path)
+    if data.get("stale"):
+        tracking_service.request_tracking(repo_path)
+        data["status"] = "refreshing"
+    else:
+        data["status"] = "ready"
+    return data
 
 
 # ── "问 Agent" 轻量入口 ──────────────────────────────────

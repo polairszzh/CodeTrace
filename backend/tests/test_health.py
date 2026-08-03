@@ -52,7 +52,7 @@ def test_file_health_no_hardcoded_paths():
     from services.git_service import get_file_health_stats, clone_or_pull_repo
 
     repo = clone_or_pull_repo(REPO_URL)
-    stats = get_file_health_stats(repo, top_n=20)
+    stats = get_file_health_stats(repo, top_n=50)
 
     files = [s["file"] for s in stats]
     has_ext = any("extension/" in f for f in files)

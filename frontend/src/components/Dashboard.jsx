@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import RepoInput from './RepoInput'
 import GitGraph from './GitGraph'
+import TrackingCard from './TrackingCard'
 
 function Dashboard({ onAskAgent }) {
   const [repoUrl, setRepoUrl] = useState('')
@@ -130,6 +131,9 @@ function Dashboard({ onAskAgent }) {
 
           {/* ── Git Graph：分支拓扑 + 合入关系 ── */}
           <GitGraph repoUrl={repoUrl} onAskAgent={onAskAgent} />
+
+          {/* ── 持续追踪：增量洞察报告 ── */}
+          <TrackingCard repoUrl={repoUrl} />
         </div>
       )}
     </div>
