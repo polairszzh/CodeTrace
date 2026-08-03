@@ -165,6 +165,37 @@ def test_refresh_error_backoff(tmp_path, monkeypatch):
     assert tracking_service.request_tracking(repo) is True
 
 
+def test_backoff_expiry_recovers(tmp_path, monkeypatch):
+    """退避窗口过后自动恢复触发刷新。"""
+    monkeypatch.setenv("CODETRACE_INDEX_DIR", str(tmp_path / "index"))
+    tracking_service._TRACKING_THREADS.clear()
+    repo = _make_repo(tmp_path, [("feat: init (#1)", 5)])
+    tracking_service.refresh_tracking(repo, llm=FakeLLM())
+
+    # 写入一个已过期的 refresh_error（10 分钟前）
+    store = tracking_service._load(repo)
+    store["refresh_error"] = {
+        "at": (datetime.datetime.now().astimezone() - datetime.timedelta(minutes=10)).isoformat(),
+        "message": "old error",
+    }
+    tracking_service._save(repo, store)
+    assert tracking_service.in_backoff(repo) is False
+    assert tracking_service.request_tracking(repo) is True
+
+
+def test_churn_strips_quoted_paths(tmp_path, monkeypatch):
+    """含空格路径的 numstat 引号被去除，统计路径准确。"""
+    monkeypatch.setenv("CODETRACE_INDEX_DIR", str(tmp_path / "index"))
+    repo = _make_repo(tmp_path, [("feat: init (#1)", 5)])
+    tracking_service.refresh_tracking(repo, llm=FakeLLM())
+    old_head = tracking_service.get_tracking(repo)["head"]
+    (repo / "my file.py").write_text("x = 1\n", encoding="utf-8")
+    _commit(repo, "feat: spaced (#2)", _date(1))
+
+    churn = tracking_service._range_churn(repo, old_head)
+    assert any(c["file"] == "my file.py" for c in churn)
+
+
 def test_empty_repo_no_crash(tmp_path, monkeypatch):
     """空仓库（无提交）不崩溃，不产生快照。"""
     monkeypatch.setenv("CODETRACE_INDEX_DIR", str(tmp_path / "index"))

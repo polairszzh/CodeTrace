@@ -140,6 +140,7 @@ def _range_churn(repo_path: Path, from_head: Optional[str], limit: int = 30) -> 
                 av, dv = int(a or 0), int(d or 0)
             except ValueError:
                 continue
+            f = f.strip('"')  # git 对含空格等路径加引号，统一去除
             if " => " in f:
                 f = f.split(" => ", 1)[1].strip().strip('"')  # 重命名记到新路径
             entry = churn.setdefault(f, {"commits": 0, "additions": 0, "deletions": 0})
@@ -200,7 +201,7 @@ def _current_totals(repo_path: Path) -> dict:
 def _compute_delta(repo_path: Path, old_snapshot: Optional[dict], head: str) -> dict:
     """对比旧快照与当前 HEAD，产出结构化增量。"""
     if old_snapshot is None:
-        return {"baseline": True, "head": head}
+        return {"baseline": True, "head": head, "current_totals": _current_totals(repo_path)}
 
     commits = _new_commits(repo_path, old_snapshot.get("head"))
     churn = _range_churn(repo_path, old_snapshot.get("head"))
@@ -211,8 +212,8 @@ def _compute_delta(repo_path: Path, old_snapshot: Optional[dict], head: str) -> 
     new_hot = [c for c in churn if c["file"] not in old_top][:10]
     continued = [c for c in churn if c["file"] in old_top][:10]
 
-    old_totals = old_snapshot
     new_totals = _current_totals(repo_path)
+    old_totals = old_snapshot
     return {
         "baseline": False,
         "from_head": old_snapshot.get("head"),
@@ -227,6 +228,7 @@ def _compute_delta(repo_path: Path, old_snapshot: Optional[dict], head: str) -> 
             "files": new_totals.get("total_files", 0) - old_totals.get("total_files", 0),
             "authors": new_totals.get("total_authors", 0) - old_totals.get("total_authors", 0),
         },
+        "current_totals": new_totals,
     }
 
 
@@ -336,7 +338,7 @@ def refresh_tracking(repo_path, llm=None) -> dict:
             "created_at": _now(),
             "top_files": top_files,
             "prs": delta.get("new_prs", []),
-            **_current_totals(repo_path),
+            **delta.get("current_totals", _current_totals(repo_path)),
         }
         snapshots.append(snapshot)
         data["snapshots"] = snapshots[-_MAX_SNAPSHOTS:]
@@ -400,5 +402,14 @@ def _within_backoff(at: Optional[str]) -> bool:
     try:
         ts = datetime.fromisoformat(at).timestamp()
         return time.time() - ts < _REFRESH_ERROR_BACKOFF
+    except Exception:
+        return False
+
+
+def in_backoff(repo_path) -> bool:
+    """公开：刷新失败是否仍处于退避窗口（端点据此决定是否重试）。"""
+    try:
+        err = _load(repo_path).get("refresh_error")
+        return bool(err and _within_backoff(err.get("at")))
     except Exception:
         return False
