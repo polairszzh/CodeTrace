@@ -127,3 +127,24 @@ def test_git_graph_cached(tmp_path):
         assert c is not a  # 失效后重新计算
     finally:
         git_service._GIT_GRAPH_CACHE.clear()
+
+
+def test_build_file_timeline_degrades_on_errors(tmp_path, monkeypatch):
+    """timeline 构建中 LLM/GitHub 异常应降级而非整个请求 500。"""
+    from routers import trace as trace_module
+
+    repo = _make_repo(tmp_path)
+
+    def boom(*a, **kw):
+        raise RuntimeError("mock failure")
+
+    monkeypatch.setattr(trace_module.github, "get_pr_info", boom)
+    monkeypatch.setattr(trace_module.llm, "classify_and_summarize", boom)
+
+    result = trace_module._build_file_timeline(repo, "alice/repo", "a.py")
+    assert result is not None
+    assert result.commit_count >= 1
+    for node in result.timeline:
+        assert node.change_type == "chore"
+        assert node.summary  # 降级为 message 截断
+        assert node.diff_stats is not None

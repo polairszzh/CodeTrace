@@ -2,6 +2,7 @@ import json
 import os
 import asyncio
 import time
+import logging
 from typing import Optional
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
@@ -19,6 +20,8 @@ from services.agent.ask_tools import ask_registry
 from services.coupling_runner import run_coupling_analysis
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 github = GitHubClient(token=os.getenv("GITHUB_TOKEN", ""))
 llm = LLMService(
@@ -41,14 +44,26 @@ def _build_file_timeline(
         pr_number = github.extract_pr_number(c["message"])
         pr_info = None
         if pr_number:
-            pr_info = github.get_pr_info(repo_full, pr_number)
+            try:
+                pr_info = github.get_pr_info(repo_full, pr_number)
+            except Exception as e:
+                logger.warning("PR 信息获取失败 repo=%s pr=%s: %s", repo_full, pr_number, e)
 
-        diff_stats = get_commit_diff_stats(repo_path, c["hash"])
-        llm_result = llm.classify_and_summarize(
-            commit_message=c["message"],
-            pr_title=pr_info.get("title") if pr_info else None,
-            pr_description=pr_info.get("body") if pr_info else None,
-        )
+        try:
+            diff_stats = get_commit_diff_stats(repo_path, c["hash"])
+        except Exception as e:
+            logger.warning("diff 统计失败 hash=%s: %s", c["hash"], e)
+            diff_stats = {"additions": 0, "deletions": 0, "files_changed": 0}
+
+        try:
+            llm_result = llm.classify_and_summarize(
+                commit_message=c["message"],
+                pr_title=pr_info.get("title") if pr_info else None,
+                pr_description=pr_info.get("body") if pr_info else None,
+            )
+        except Exception as e:
+            logger.warning("LLM 分类失败 hash=%s: %s", c["hash"], e)
+            llm_result = {}
 
         node = TimelineNode(
             commit_hash=c["hash"],
@@ -430,8 +445,10 @@ async def repo_index_status(repo_url: str):
         deadline = time.time() + 300
         not_started_deadline = time.time() + 15
         while True:
+            # 状态文件读取是本地小文件（微秒级），直接读；
+            # 新鲜度检查可能跑 git rev-parse 子进程，放线程池避免阻塞事件循环
             status = get_index_status(repo_path)
-            fresh = index_fresh(repo_path)
+            fresh = await asyncio.to_thread(index_fresh, repo_path)
             if status is None:
                 # 索引尚未启动：给后台线程写初始状态留出窗口，超时仍无则视为未开始结束
                 while (
@@ -441,7 +458,7 @@ async def repo_index_status(repo_url: str):
                 ):
                     await asyncio.sleep(2)
                     status = get_index_status(repo_path)
-                    fresh = index_fresh(repo_path)
+                    fresh = await asyncio.to_thread(index_fresh, repo_path)
                 if status is None and not fresh:
                     yield f"data: {json.dumps({'repo': repo_url, 'fresh': False, 'status': 'not_started', 'message': '索引尚未启动'}, ensure_ascii=False)}\n\n"
                     yield "data: [DONE]\n\n"
@@ -456,7 +473,7 @@ async def repo_index_status(repo_url: str):
                 or time.time() > deadline
             ):
                 break
-            await asyncio.sleep(1)
+            await asyncio.sleep(2)
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(

@@ -328,16 +328,42 @@ def test_should_full_clone_decision(monkeypatch):
 
 
 def test_repo_path_sanitized(tmp_path, monkeypatch):
-    """URL 末段清洗：'..'/'.'/空名不会逃逸缓存目录，锁名同源。"""
+    """URL 清洗：主机+owner 隔离、'..'/'.' 不逃逸缓存目录。"""
     monkeypatch.setattr(git_service, "CACHE_DIR", tmp_path / "cache")
-    assert git_service.repo_name_for_url("https://github.com/o/..") == "_"
-    assert git_service.repo_name_for_url("https://github.com/o/.") == "_"
-    assert git_service.repo_name_for_url("https://github.com/o/") == "o"
-    assert git_service.repo_name_for_url("https://github.com/o/repo.git") == "repo"
-
+    assert git_service.repo_name_for_url("https://github.com/alice/foo.git") == "github.com_alice_foo"
+    assert git_service.repo_name_for_url("https://github.com/bob/foo.git") == "github.com_bob_foo"
+    assert git_service.repo_name_for_url("https://github.com/alice/foo.git") != \
+        git_service.repo_name_for_url("https://github.com/bob/foo.git")
+    # 目录穿越与空名安全
+    assert "/" not in git_service.repo_name_for_url("https://github.com/o/..")
+    assert git_service.repo_name_for_url("https://github.com/o/..") != ".."
     p = git_service.repo_path_for_url("https://github.com/o/..")
-    assert p == git_service.CACHE_DIR / "_"
     assert p.resolve().is_relative_to(git_service.CACHE_DIR.resolve())
+
+
+def test_legacy_cache_migration(tmp_path, monkeypatch):
+    """旧版同名缓存自动迁移到新命名（origin 匹配时）。"""
+    monkeypatch.setattr(git_service, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(git_service, "_LOCK_DIR", tmp_path / "cache" / ".locks")
+    legacy = git_service.CACHE_DIR / "foo"
+    legacy.mkdir(parents=True)
+    subprocess.run(["git", "init", "-b", "main", str(legacy)], check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=legacy, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "T"], cwd=legacy, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", "https://github.com/alice/foo.git"],
+        cwd=legacy, check=True, capture_output=True,
+    )
+    (legacy / "a.txt").write_text("x", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=legacy, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "c1"], cwd=legacy, check=True, capture_output=True)
+
+    url = "https://github.com/alice/foo.git"
+    repo_path = git_service.clone_or_pull_repo(url)
+    new_path = git_service.repo_path_for_url(url)
+    assert repo_path == new_path
+    assert new_path.exists()
+    assert not legacy.exists()
 
 
 def test_remote_head_proxy_fallback(monkeypatch):
@@ -501,6 +527,10 @@ def test_index_status_sse_not_started(local_repo, monkeypatch):
     from routers.trace import router
 
     monkeypatch.setattr(git_service, "CACHE_DIR", local_repo.parent)
+    # 按新命名规则创建仓库目录（URL → host_owner_repo）
+    target = local_repo.parent / git_service.repo_name_for_url("https://github.com/owner/repo.git")
+    target.mkdir(exist_ok=True)
+    subprocess.run(["git", "init", "-b", "main", str(target)], check=True, capture_output=True)
     index_service._FRESH_CACHE.clear()
     app = FastAPI()
     app.include_router(router, prefix="/api")

@@ -30,7 +30,10 @@ _LOCK_DIR = CACHE_DIR / ".locks"
 
 def _acquire_lock(name: str, timeout: float = 30) -> bool:
     """获取 repo 级别锁。返回是否成功。"""
-    os.makedirs(_LOCK_DIR, exist_ok=True)
+    try:
+        os.makedirs(_LOCK_DIR, exist_ok=True)
+    except Exception:
+        return False
     lock_path = _LOCK_DIR / name.replace("/", "_").replace(":", "_")
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -143,10 +146,54 @@ def repo_path_for_url(repo_url: str) -> Path:
 
 
 def repo_name_for_url(repo_url: str) -> str:
-    """从 URL 提取安全仓库名（防目录穿越：'..'/'.'/特殊字符一律清洗）。"""
+    """
+    从 URL 提取缓存目录名：主机+路径（含 owner），不同 owner 同名仓库不再冲突。
+    防目录穿越（'..'/'.'/特殊字符清洗），过长时哈希截断。
+    """
+    try:
+        parsed = urlparse(repo_url)
+        host = (parsed.hostname or "git").lower()
+        path = parsed.path.strip("/").removesuffix(".git").rstrip("/")
+        raw = f"{host}_{path}" if path else host
+    except Exception:
+        raw = repo_url.rstrip("/").split("/")[-1].replace(".git", "")
+    name = re.sub(r"[^A-Za-z0-9_.-]", "_", raw)
+    if name in ("", ".", ".."):
+        name = "_"
+    if len(name) > 80:
+        import hashlib
+        name = name[:40] + "_" + hashlib.md5(name.encode("utf-8")).hexdigest()[:12]
+    return name
+
+
+def _legacy_cache_path(repo_url: str) -> Path:
+    """旧版缓存目录名（仅 URL 末段），用于一次性迁移。"""
     raw = repo_url.rstrip("/").split("/")[-1].replace(".git", "")
     name = re.sub(r"[^A-Za-z0-9_.-]", "_", raw)
-    return name if name not in ("", ".", "..") else "_"
+    return CACHE_DIR / (name if name not in ("", ".", "..") else "_")
+
+
+def _norm_url(url: str) -> str:
+    return url.rstrip("/").removesuffix(".git").lower()
+
+
+def _migrate_legacy_cache(repo_url: str, repo_path: Path) -> bool:
+    """旧版同名缓存迁移到新命名（仅当 origin 与 URL 匹配），含索引/状态文件。"""
+    legacy = _legacy_cache_path(repo_url)
+    if repo_path.exists() or not legacy.exists() or not (legacy / ".git").exists():
+        return False
+    try:
+        origin = subprocess.run(
+            ["git", "config", "--get", "remote.origin.url"],
+            cwd=legacy, capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+        if not origin or _norm_url(origin) != _norm_url(repo_url):
+            return False
+        os.rename(legacy, repo_path)
+        index_service.rename_index_for(legacy, repo_path)
+        return True
+    except Exception:
+        return False
 
 
 def _repo_size_kb(repo_url: str) -> int | None:
@@ -241,24 +288,27 @@ def clone_or_pull_repo(repo_url: str) -> Path:
     if not repo_path.exists():
         locked = _acquire_lock(repo_name)
         try:
-            full_clone = _should_full_clone(repo_url)
-            clone_args = ["clone"]
-            if not full_clone:
-                clone_args.append("--depth=500")
-            clone_args += [repo_url, str(repo_path)]
-            try:
-                _run_git_with_proxy_fallback(
-                    clone_args, timeout=600 if full_clone else 120,
-                )
-            except subprocess.TimeoutExpired:
-                # 超时：清掉半成品，降级浅克隆
-                import shutil
-                if repo_path.parent == CACHE_DIR:
-                    shutil.rmtree(repo_path, ignore_errors=True)
-                _run_git_with_proxy_fallback(
-                    ["clone", "--depth=500", repo_url, str(repo_path)],
-                    timeout=600,
-                )
+            if not repo_path.exists():
+                _migrate_legacy_cache(repo_url, repo_path)
+            if not repo_path.exists():
+                full_clone = _should_full_clone(repo_url)
+                clone_args = ["clone"]
+                if not full_clone:
+                    clone_args.append("--depth=500")
+                clone_args += [repo_url, str(repo_path)]
+                try:
+                    _run_git_with_proxy_fallback(
+                        clone_args, timeout=600 if full_clone else 120,
+                    )
+                except subprocess.TimeoutExpired:
+                    # 超时：清掉半成品，降级浅克隆
+                    import shutil
+                    if repo_path.parent == CACHE_DIR:
+                        shutil.rmtree(repo_path, ignore_errors=True)
+                    _run_git_with_proxy_fallback(
+                        ["clone", "--depth=500", repo_url, str(repo_path)],
+                        timeout=600,
+                    )
         finally:
             if locked:
                 _release_lock(repo_name)
