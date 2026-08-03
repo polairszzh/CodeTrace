@@ -83,6 +83,39 @@ def test_incremental_delta_and_prs(tmp_path, monkeypatch):
     assert delta["totals_delta"]["commits"] == 2
 
 
+def test_pr_extraction_merge_message(tmp_path, monkeypatch):
+    """兼容 GitHub「Merge pull request #N」提交信息。"""
+    monkeypatch.setenv("CODETRACE_INDEX_DIR", str(tmp_path / "index"))
+    repo = _make_repo(tmp_path, [("feat: init (#1)", 5)])
+    tracking_service.refresh_tracking(repo, llm=FakeLLM())
+    (repo / "f0.py").write_text("# changed\n", encoding="utf-8")
+    _commit(repo, "Merge pull request #7 from feature/x", _date(1))
+
+    data = tracking_service.refresh_tracking(repo, llm=FakeLLM())
+    delta = data["latest_report"]["structured"]
+    assert [p["pr_number"] for p in delta["new_prs"]] == [7]
+
+
+def test_empty_repo_no_crash(tmp_path, monkeypatch):
+    """空仓库（无提交）不崩溃，不产生快照。"""
+    monkeypatch.setenv("CODETRACE_INDEX_DIR", str(tmp_path / "index"))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True)
+    data = tracking_service.refresh_tracking(repo, llm=FakeLLM())
+    assert data["snapshots"] == []
+    info = tracking_service.get_tracking(repo)
+    assert info["head"] is None
+
+
+def test_git_range_error_returns_none(tmp_path, monkeypatch):
+    """git 区间不可读时返回 None 而非静默空列表。"""
+    monkeypatch.setenv("CODETRACE_INDEX_DIR", str(tmp_path / "index"))
+    repo = _make_repo(tmp_path, [("feat: init (#1)", 5)])
+    assert tracking_service._new_commits(repo, "deadbeef00000000000000000000000000000000") is None
+    assert tracking_service._range_churn(repo, "deadbeef00000000000000000000000000000000") is None
+
+
 def test_idempotent_no_new_snapshot(tmp_path, monkeypatch):
     monkeypatch.setenv("CODETRACE_INDEX_DIR", str(tmp_path / "index"))
     repo = _make_repo(tmp_path, [("feat: init (#1)", 5)])

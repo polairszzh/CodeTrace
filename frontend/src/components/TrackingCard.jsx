@@ -12,19 +12,22 @@ function TrackingCard({ repoUrl }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const timerRef = useRef(null)
+  const repoRef = useRef(repoUrl)
   const full = repoFull(repoUrl)
 
   const load = (showLoading = true) => {
     if (!repoUrl) return
+    const url = repoUrl
     if (showLoading) setLoading(true)
     setError('')
-    fetch(`/api/repo/tracking?repo_url=${encodeURIComponent(repoUrl)}`)
+    fetch(`/api/repo/tracking?repo_url=${encodeURIComponent(url)}`)
       .then(r => r.ok ? r.json() : r.json().then(d => Promise.reject(new Error(d?.detail || `请求失败 (HTTP ${r.status})`))))
-      .then(d => { setData(d); setLoading(false) })
-      .catch(e => { setError(e.message || String(e)); setLoading(false) })
+      .then(d => { if (repoRef.current === url) { setData(d); setLoading(false) } })
+      .catch(e => { if (repoRef.current === url) { setError(e.message || String(e)); setLoading(false) } })
   }
 
   useEffect(() => {
+    repoRef.current = repoUrl
     if (repoUrl) load()
     return () => { if (timerRef.current) clearTimeout(timerRef.current) }
   }, [repoUrl])
@@ -84,7 +87,9 @@ function TrackingCard({ repoUrl }) {
             {data?.head && <span>当前 HEAD：{data.head.slice(0, 7)}</span>}
           </div>
 
-          {report ? (
+          {data?.status === 'error' ? (
+            <div className="text-xs" style={{ color: '#e53e3e' }}>{data.message || '追踪不可用'}</div>
+          ) : report ? (
             <div className="text-sm leading-relaxed markdown-report">
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{report.markdown || ''}</ReactMarkdown>
             </div>

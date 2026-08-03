@@ -23,7 +23,7 @@ from services.index_service import index_dir
 
 logger = logging.getLogger(__name__)
 
-_PR_RE = re.compile(r"\(#(\d+)\)")
+_PR_RE = re.compile(r"\(#(\d+)\)|(?:^|\s)#(\d+)\b")
 _TRACKING_THREADS: dict[str, threading.Thread] = {}
 _TRACKING_THREADS_LOCK = threading.Lock()
 _STORE_LOCK = threading.Lock()
@@ -41,7 +41,7 @@ def _store_path(repo_path: Path) -> Path:
 def _git_head(repo_path: Path) -> Optional[str]:
     try:
         result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
+            ["git", "rev-parse", "--verify", "HEAD"],
             cwd=repo_path, capture_output=True, text=True, timeout=15,
         )
         head = result.stdout.strip()
@@ -85,6 +85,12 @@ def _new_commits(repo_path: Path, from_head: Optional[str]) -> list[dict]:
             ["git", "log", f"{from_head}..HEAD", "--pretty=format:%H|%an|%ai|%s"],
             cwd=repo_path, capture_output=True, text=True, encoding="utf-8", timeout=60,
         )
+        if result.returncode != 0:
+            logger.warning(
+                "git log %s..HEAD 失败(%s): %s", from_head, result.returncode,
+                result.stderr.strip()[:200],
+            )
+            return None
         commits = []
         for line in result.stdout.strip().split("\n"):
             if not line:
@@ -112,6 +118,12 @@ def _range_churn(repo_path: Path, from_head: Optional[str], limit: int = 30) -> 
             ["git", "log", f"{from_head}..HEAD", "--numstat", "--pretty=format:__COMMIT__%H"],
             cwd=repo_path, capture_output=True, text=True, encoding="utf-8", timeout=60,
         )
+        if result.returncode != 0:
+            logger.warning(
+                "git log --numstat %s..HEAD 失败(%s): %s", from_head, result.returncode,
+                result.stderr.strip()[:200],
+            )
+            return None
         churn = {}
         for line in result.stdout.split("\n"):
             line = line.strip()
@@ -145,16 +157,26 @@ def _range_churn(repo_path: Path, from_head: Optional[str], limit: int = 30) -> 
 
 
 def _prs_from_commits(commits: list[dict]) -> list[dict]:
+    if not commits:
+        return []
     prs = []
     for c in commits:
-        m = _PR_RE.search(c["message"] or "")
-        if m:
+        pr_number = _extract_pr_number(c["message"])
+        if pr_number:
             prs.append({
-                "pr_number": int(m.group(1)),
+                "pr_number": pr_number,
                 "subject": c["message"],
                 "hash": c["hash"][:7],
             })
     return prs
+
+
+def _extract_pr_number(message: Optional[str]) -> Optional[int]:
+    """提取 PR 编号：兼容 (#123) 与 GitHub「Merge pull request #123」两种形式。"""
+    m = _PR_RE.search(message or "")
+    if not m:
+        return None
+    return int(m.group(1) or m.group(2))
 
 
 def _current_totals(repo_path: Path) -> dict:
@@ -179,6 +201,8 @@ def _compute_delta(repo_path: Path, old_snapshot: Optional[dict], head: str) -> 
 
     commits = _new_commits(repo_path, old_snapshot.get("head"))
     churn = _range_churn(repo_path, old_snapshot.get("head"))
+    if commits is None or churn is None:
+        return {"error": "增量计算失败（git 区间不可读）", "head": head}
     new_prs = _prs_from_commits(commits)
     old_top = set(old_snapshot.get("top_files") or [])
     new_hot = [c for c in churn if c["file"] not in old_top][:10]

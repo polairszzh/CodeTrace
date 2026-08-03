@@ -493,6 +493,10 @@ async def repo_tracking(repo_url: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"仓库操作失败：{str(e)}")
     data = await asyncio.to_thread(tracking_service.get_tracking, repo_path)
+    if not data.get("head"):
+        data["status"] = "error"
+        data["message"] = "仓库没有提交，无法建立追踪基线"
+        return data
     if data.get("stale"):
         tracking_service.request_tracking(repo_path)
         data["status"] = "refreshing"
