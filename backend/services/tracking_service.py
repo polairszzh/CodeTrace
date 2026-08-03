@@ -82,7 +82,7 @@ def _new_commits(repo_path: Path, from_head: Optional[str]) -> list[dict]:
         return []
     try:
         result = subprocess.run(
-            ["git", "log", f"{from_head}..HEAD", "--pretty=format:%H|%an|%ai|%s"],
+            ["git", "log", f"{from_head}..HEAD", "--pretty=format:%H%x00%an%x00%ai%x00%s"],
             cwd=repo_path, capture_output=True, text=True, encoding="utf-8", timeout=60,
         )
         if result.returncode != 0:
@@ -95,7 +95,7 @@ def _new_commits(repo_path: Path, from_head: Optional[str]) -> list[dict]:
         for line in result.stdout.strip().split("\n"):
             if not line:
                 continue
-            parts = line.split("|", 3)
+            parts = line.split("\x00")
             if len(parts) >= 4:
                 commits.append({
                     "hash": parts[0],
@@ -160,9 +160,11 @@ def _prs_from_commits(commits: list[dict]) -> list[dict]:
     if not commits:
         return []
     prs = []
+    seen = set()
     for c in commits:
         pr_number = _extract_pr_number(c["message"])
-        if pr_number:
+        if pr_number and pr_number not in seen:
+            seen.add(pr_number)
             prs.append({
                 "pr_number": pr_number,
                 "subject": c["message"],
@@ -313,6 +315,9 @@ def refresh_tracking(repo_path, llm=None) -> dict:
 
         old = snapshots[-1] if snapshots else None
         delta = _compute_delta(repo_path, old, head)
+        if delta.get("error"):
+            logger.warning("追踪增量计算失败 %s: %s", repo_path, delta["error"])
+            return data  # 区间不可读时跳过本次刷新，不生成误导报告
         report = _generate_report(delta, llm)
 
         from services.git_service import get_top_changed_files  # 延迟导入避免循环依赖

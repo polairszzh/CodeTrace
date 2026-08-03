@@ -96,6 +96,50 @@ def test_pr_extraction_merge_message(tmp_path, monkeypatch):
     assert [p["pr_number"] for p in delta["new_prs"]] == [7]
 
 
+def test_pr_dedupe_same_pr_multiple_commits(tmp_path, monkeypatch):
+    """同一 PR 多个提交只计一次。"""
+    monkeypatch.setenv("CODETRACE_INDEX_DIR", str(tmp_path / "index"))
+    repo = _make_repo(tmp_path, [("feat: init (#1)", 5)])
+    tracking_service.refresh_tracking(repo, llm=FakeLLM())
+    (repo / "a.py").write_text("x = 1\n", encoding="utf-8")
+    _commit(repo, "feat: part1 (#2)", _date(2))
+    (repo / "b.py").write_text("y = 1\n", encoding="utf-8")
+    _commit(repo, "feat: part2 (#2)", _date(1))
+
+    data = tracking_service.refresh_tracking(repo, llm=FakeLLM())
+    prs = data["latest_report"]["structured"]["new_prs"]
+    assert [p["pr_number"] for p in prs] == [2]
+    assert len(prs) == 1
+
+
+def test_commit_message_with_pipe_kept(tmp_path, monkeypatch):
+    """提交信息含 | 不被截断。"""
+    monkeypatch.setenv("CODETRACE_INDEX_DIR", str(tmp_path / "index"))
+    repo = _make_repo(tmp_path, [("feat: init (#1)", 5)])
+    tracking_service.refresh_tracking(repo, llm=FakeLLM())
+    old_head = tracking_service.get_tracking(repo)["head"]
+    (repo / "f0.py").write_text("# changed\n", encoding="utf-8")
+    _commit(repo, "feat: pipe | in message (#5)", _date(1))
+
+    commits = tracking_service._new_commits(repo, old_head)
+    assert commits and commits[0]["message"] == "feat: pipe | in message (#5)"
+
+
+def test_delta_error_skips_snapshot(tmp_path, monkeypatch):
+    """git 区间不可读（delta error）时不追加快照、不生成误导报告。"""
+    monkeypatch.setenv("CODETRACE_INDEX_DIR", str(tmp_path / "index"))
+    repo = _make_repo(tmp_path, [("feat: init (#1)", 5)])
+    tracking_service.refresh_tracking(repo, llm=FakeLLM())
+
+    (repo / "f0.py").write_text("# changed\n", encoding="utf-8")
+    _commit(repo, "feat: next (#2)", _date(1))
+    monkeypatch.setattr(tracking_service, "_new_commits", lambda *a, **kw: None)
+    monkeypatch.setattr(tracking_service, "_range_churn", lambda *a, **kw: None)
+    data = tracking_service.refresh_tracking(repo, llm=FakeLLM())
+    assert len(data["snapshots"]) == 1
+    assert data["latest_report"]["generated_by"] == "baseline"  # 报告未被覆盖
+
+
 def test_empty_repo_no_crash(tmp_path, monkeypatch):
     """空仓库（无提交）不崩溃，不产生快照。"""
     monkeypatch.setenv("CODETRACE_INDEX_DIR", str(tmp_path / "index"))
