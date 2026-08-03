@@ -140,9 +140,9 @@ def _range_churn(repo_path: Path, from_head: Optional[str], limit: int = 30) -> 
                 av, dv = int(a or 0), int(d or 0)
             except ValueError:
                 continue
-            f = f.strip('"')  # git 对含空格等路径加引号，统一去除
+            f = _unquote_git_path(f.strip())  # git 对含特殊字符路径 C 风格转义，统一还原
             if " => " in f:
-                f = f.split(" => ", 1)[1].strip().strip('"')  # 重命名记到新路径
+                f = _unquote_git_path(f.split(" => ", 1)[1].strip())  # 重命名记到新路径
             entry = churn.setdefault(f, {"commits": 0, "additions": 0, "deletions": 0})
             entry["commits"] += 1
             entry["additions"] += av
@@ -173,6 +173,25 @@ def _prs_from_commits(commits: list[dict]) -> list[dict]:
                 "hash": c["hash"][:7],
             })
     return prs
+
+
+def _unquote_git_path(path: str) -> str:
+    """还原 git C 风格转义的路径（\" \\ \t \n \r 等），未加引号时原样返回。"""
+    if len(path) < 2 or not path.startswith('"') or not path.endswith('"'):
+        return path
+    body = path[1:-1]
+    out = []
+    i = 0
+    escapes = {'"': '"', '\\': '\\', 't': '\t', 'n': '\n', 'r': '\r'}
+    while i < len(body):
+        ch = body[i]
+        if ch == '\\' and i + 1 < len(body):
+            out.append(escapes.get(body[i + 1], body[i + 1]))
+            i += 2
+        else:
+            out.append(ch)
+            i += 1
+    return ''.join(out)
 
 
 def _extract_pr_number(message: Optional[str]) -> Optional[int]:
@@ -378,10 +397,10 @@ def request_tracking(repo_path) -> bool:
     try:
         repo_path = Path(repo_path)
         name = repo_path.name
-        err = _load(repo_path).get("refresh_error")
-        if err and _within_backoff(err.get("at")):
-            return False
         with _TRACKING_THREADS_LOCK:
+            err = _load(repo_path).get("refresh_error")
+            if err and _within_backoff(err.get("at")):
+                return False
             existing = _TRACKING_THREADS.get(name)
             if existing and existing.is_alive():
                 return False

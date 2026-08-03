@@ -12,15 +12,19 @@ function TrackingCard({ repoUrl }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const timerRef = useRef(null)
+  const abortRef = useRef(null)
   const repoRef = useRef(repoUrl)
   const full = repoFull(repoUrl)
 
   const load = (showLoading = true) => {
     if (!repoUrl) return
     const url = repoUrl
+    abortRef.current?.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
     if (showLoading) setLoading(true)
     setError('')
-    fetch(`/api/repo/tracking?repo_url=${encodeURIComponent(url)}`)
+    fetch(`/api/repo/tracking?repo_url=${encodeURIComponent(url)}`, { signal: controller.signal })
       .then(r => r.ok ? r.json() : r.json().then(d => Promise.reject(new Error(d?.detail || `请求失败 (HTTP ${r.status})`))))
       .then(d => {
         if (repoRef.current !== url) return
@@ -31,13 +35,19 @@ function TrackingCard({ repoUrl }) {
           timerRef.current = setTimeout(() => load(false), 3000)
         }
       })
-      .catch(e => { if (repoRef.current === url) { setError(e.message || String(e)); setLoading(false) } })
+      .catch(e => {
+        if (e.name === 'AbortError') return
+        if (repoRef.current === url) { setError(e.message || String(e)); setLoading(false) }
+      })
   }
 
   useEffect(() => {
     repoRef.current = repoUrl
     if (repoUrl) load()
-    return () => { if (timerRef.current) clearTimeout(timerRef.current) }
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current)
+      abortRef.current?.abort()
+    }
   }, [repoUrl])
 
   if (!repoUrl) return null

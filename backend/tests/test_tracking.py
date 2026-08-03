@@ -196,6 +196,14 @@ def test_churn_strips_quoted_paths(tmp_path, monkeypatch):
     assert any(c["file"] == "my file.py" for c in churn)
 
 
+def test_unquote_git_path():
+    """git C 风格转义路径还原。"""
+    assert tracking_service._unquote_git_path('"a\\"b.txt"') == 'a"b.txt'
+    assert tracking_service._unquote_git_path('"a\\\\b.txt"') == 'a\\b.txt'
+    assert tracking_service._unquote_git_path("my file.py") == "my file.py"
+    assert tracking_service._unquote_git_path('"my file.py"') == "my file.py"
+
+
 def test_empty_repo_no_crash(tmp_path, monkeypatch):
     """空仓库（无提交）不崩溃，不产生快照。"""
     monkeypatch.setenv("CODETRACE_INDEX_DIR", str(tmp_path / "index"))
