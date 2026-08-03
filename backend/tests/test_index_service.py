@@ -328,16 +328,101 @@ def test_should_full_clone_decision(monkeypatch):
 
 
 def test_repo_path_sanitized(tmp_path, monkeypatch):
-    """URL 末段清洗：'..'/'.'/空名不会逃逸缓存目录，锁名同源。"""
+    """URL 清洗：主机+owner 隔离、'..'/'.' 不逃逸缓存目录。"""
     monkeypatch.setattr(git_service, "CACHE_DIR", tmp_path / "cache")
-    assert git_service.repo_name_for_url("https://github.com/o/..") == "_"
-    assert git_service.repo_name_for_url("https://github.com/o/.") == "_"
-    assert git_service.repo_name_for_url("https://github.com/o/") == "o"
-    assert git_service.repo_name_for_url("https://github.com/o/repo.git") == "repo"
-
+    assert git_service.repo_name_for_url("https://github.com/alice/foo.git") == "github.com_alice_foo"
+    assert git_service.repo_name_for_url("https://github.com/bob/foo.git") == "github.com_bob_foo"
+    assert git_service.repo_name_for_url("https://github.com/alice/foo.git") != \
+        git_service.repo_name_for_url("https://github.com/bob/foo.git")
+    # SSH 形式 URL 同样得到可读命名
+    assert git_service.repo_name_for_url("git@github.com:alice/foo.git") == "github.com_alice_foo"
+    # 目录穿越与空名安全
+    assert "/" not in git_service.repo_name_for_url("https://github.com/o/..")
+    assert git_service.repo_name_for_url("https://github.com/o/..") != ".."
     p = git_service.repo_path_for_url("https://github.com/o/..")
-    assert p == git_service.CACHE_DIR / "_"
     assert p.resolve().is_relative_to(git_service.CACHE_DIR.resolve())
+
+
+def test_legacy_cache_migration(tmp_path, monkeypatch):
+    """旧版同名缓存自动迁移到新命名（origin 匹配时）。"""
+    monkeypatch.setattr(git_service, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(git_service, "_LOCK_DIR", tmp_path / "cache" / ".locks")
+    legacy = git_service.CACHE_DIR / "foo"
+    legacy.mkdir(parents=True)
+    subprocess.run(["git", "init", "-b", "main", str(legacy)], check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=legacy, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "T"], cwd=legacy, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", "https://github.com/alice/foo.git"],
+        cwd=legacy, check=True, capture_output=True,
+    )
+    (legacy / "a.txt").write_text("x", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=legacy, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "c1"], cwd=legacy, check=True, capture_output=True)
+
+    url = "https://github.com/alice/foo.git"
+    repo_path = git_service.clone_or_pull_repo(url)
+    new_path = git_service.repo_path_for_url(url)
+    assert repo_path == new_path
+    assert new_path.exists()
+    assert not legacy.exists()
+
+
+def test_remote_head_proxy_fallback(monkeypatch):
+    """git 网络命令：配置代理失败后自动清空代理直连重试。"""
+    monkeypatch.delenv("CODETRACE_GIT_PROXY", raising=False)
+    calls = []
+
+    class FakeResult:
+        returncode = 0
+        stdout = "abc123deadbeef\tHEAD\n"
+        stderr = ""
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        if len(calls) == 1:
+            raise OSError("connection refused")
+        return FakeResult()
+
+    monkeypatch.setattr(git_service.subprocess, "run", fake_run)
+    head = git_service._remote_head("https://github.com/owner/repo.git")
+    assert head == "abc123deadbeef"
+    assert len(calls) == 2
+    # 第二次必须是直连（显式清空代理）
+    assert calls[1][1] == "-c" and calls[1][2] == "http.proxy="
+
+
+def test_remote_head_no_retry_on_timeout(monkeypatch):
+    """ls-remote 首轮超时（代理黑洞）不再重试，避免延迟翻倍。"""
+    monkeypatch.delenv("CODETRACE_GIT_PROXY", raising=False)
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        raise subprocess.TimeoutExpired(cmd, timeout=8)
+
+    monkeypatch.setattr(git_service.subprocess, "run", fake_run)
+    head = git_service._remote_head("https://github.com/owner/repo.git")
+    assert head is None
+    assert len(calls) == 1
+
+
+def test_repo_full_from_url():
+    """owner/repo 提取：https 与 SSH 形式通用。"""
+    assert git_service.repo_full_from_url("https://github.com/alice/foo.git") == "alice/foo"
+    assert git_service.repo_full_from_url("git@github.com:alice/foo.git") == "alice/foo"
+    assert git_service.repo_full_from_url("https://github.com/alice/foo") == "alice/foo"
+    assert git_service.repo_full_from_url("https://github.com/") is None
+    assert git_service.repo_full_from_url("") is None
+
+
+def test_git_proxy_env_override(monkeypatch):
+    """CODETRACE_GIT_PROXY 显式代理优先生效。"""
+    monkeypatch.setenv("CODETRACE_GIT_PROXY", "http://127.0.0.1:7897")
+    args = git_service._git_net_args(["ls-remote", "https://github.com/o/r.git", "HEAD"])
+    assert args[0] == "git"
+    assert args[1] == "-c" and args[2] == "http.proxy=http://127.0.0.1:7897"
+    assert "https.proxy=http://127.0.0.1:7897" in args
 
 
 def test_repo_size_cached(monkeypatch):
@@ -468,6 +553,10 @@ def test_index_status_sse_not_started(local_repo, monkeypatch):
     from routers.trace import router
 
     monkeypatch.setattr(git_service, "CACHE_DIR", local_repo.parent)
+    # 按新命名规则创建仓库目录（URL → host_owner_repo）
+    target = local_repo.parent / git_service.repo_name_for_url("https://github.com/owner/repo.git")
+    target.mkdir(exist_ok=True)
+    subprocess.run(["git", "init", "-b", "main", str(target)], check=True, capture_output=True)
     index_service._FRESH_CACHE.clear()
     app = FastAPI()
     app.include_router(router, prefix="/api")

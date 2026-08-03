@@ -16,7 +16,7 @@ function addRecentRepo(url) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(list))
 }
 
-function RepoInput({ value, onChange, onReady, autoFocus }) {
+function RepoInput({ value, onChange, onReady, autoFocus, confirmOnBlur = true }) {
   const [recentRepos] = useState(getRecentRepos)
   const [showDropdown, setShowDropdown] = useState(false)
   const ref = useRef(null)
@@ -50,9 +50,12 @@ function RepoInput({ value, onChange, onReady, autoFocus }) {
         value={value}
         onChange={e => onChange(e.target.value)}
         onFocus={() => recentRepos.length > 0 && setShowDropdown(true)}
-        onBlur={() => setTimeout(() => {
-          if (value.trim()) handleConfirm()
-        }, 200)}
+        onBlur={() => {
+          if (!confirmOnBlur) return
+          setTimeout(() => {
+            if (value.trim()) handleConfirm()
+          }, 200)
+        }}
         onKeyDown={handleKeyDown}
         className="w-full px-3 py-2 rounded-lg text-sm outline-none transition-colors font-mono"
         style={{

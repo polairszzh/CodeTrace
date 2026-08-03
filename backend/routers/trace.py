@@ -2,12 +2,13 @@ import json
 import os
 import asyncio
 import time
+import logging
 from typing import Optional
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from models.schemas import TraceRequest, TraceResponse, TimelineNode, DiffStats
-from services.git_service import clone_or_pull_repo, repo_path_for_url, get_file_commits, get_commit_diff_stats, list_files_at_commit, get_file_content_at_commit, get_file_commit_counts, get_repo_summary
+from services.git_service import clone_or_pull_repo, repo_path_for_url, repo_full_from_url, get_file_commits, get_commit_diff_stats, list_files_at_commit, get_file_content_at_commit, get_file_commit_counts, get_repo_summary, get_git_graph
 from services.github_service import GitHubClient
 from services.llm_service import LLMService
 from services.ast_service import trace_function_across_commits, trace_class_across_commits, extract_symbols_fast
@@ -19,6 +20,8 @@ from services.agent.ask_tools import ask_registry
 from services.coupling_runner import run_coupling_analysis
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 github = GitHubClient(token=os.getenv("GITHUB_TOKEN", ""))
 llm = LLMService(
@@ -37,18 +40,34 @@ def _build_file_timeline(
         return None  # 无历史由路由层抛 404，避免依赖线程异常传播
 
     timeline = []
+    warnings = []
     for c in commits:
         pr_number = github.extract_pr_number(c["message"])
         pr_info = None
         if pr_number:
-            pr_info = github.get_pr_info(repo_full, pr_number)
+            try:
+                pr_info = github.get_pr_info(repo_full, pr_number)
+            except Exception as e:
+                logger.warning("PR 信息获取失败 repo=%s pr=%s: %s", repo_full, pr_number, e)
+                warnings.append(f"PR #{pr_number} 信息获取失败，已跳过")
 
-        diff_stats = get_commit_diff_stats(repo_path, c["hash"])
-        llm_result = llm.classify_and_summarize(
-            commit_message=c["message"],
-            pr_title=pr_info.get("title") if pr_info else None,
-            pr_description=pr_info.get("body") if pr_info else None,
-        )
+        try:
+            diff_stats = get_commit_diff_stats(repo_path, c["hash"])
+        except Exception as e:
+            logger.warning("diff 统计失败 hash=%s: %s", c["hash"], e)
+            diff_stats = {"additions": 0, "deletions": 0, "files_changed": 0}
+            warnings.append(f"提交 {c['hash'][:7]} diff 统计失败，按 0 处理")
+
+        try:
+            llm_result = llm.classify_and_summarize(
+                commit_message=c["message"],
+                pr_title=pr_info.get("title") if pr_info else None,
+                pr_description=pr_info.get("body") if pr_info else None,
+            )
+        except Exception as e:
+            logger.warning("LLM 分类失败 hash=%s: %s", c["hash"], e)
+            llm_result = {}
+            warnings.append(f"提交 {c['hash'][:7]} LLM 分类失败，使用默认摘要")
 
         node = TimelineNode(
             commit_hash=c["hash"],
@@ -68,6 +87,7 @@ def _build_file_timeline(
         file_path=file_path,
         timeline=timeline,
         commit_count=len(timeline),
+        warnings=warnings,
     )
 
 
@@ -83,11 +103,8 @@ async def trace_file(req: TraceRequest):
         TraceResponse: 包含时间线和提交统计信息的响应体。
     """
     # 1. 解析 repo_url
-    try:
-        parts = req.repo_url.rstrip("/").split("/")
-        repo_owner, repo_name = parts[-2], parts[-1].replace(".git", "")
-        repo_full = f"{repo_owner}/{repo_name}" 
-    except Exception:
+    repo_full = repo_full_from_url(req.repo_url)
+    if not repo_full:
         raise HTTPException(status_code=400, detail="仓库格式地址错误")
     
     # 2. clone/pull 仓库
@@ -107,11 +124,8 @@ async def trace_function(req: TraceRequest, function_name: str = ""):
     if not function_name:
         raise HTTPException(status_code=400, detail="请提供函数名")
     
-    try:
-        parts = req.repo_url.rstrip("/").split("/")
-        repo_owner, repo_name = parts[-2], parts[-1].replace(".git", "")
-        repo_full = f"{repo_owner}/{repo_name}"
-    except Exception:
+    repo_full = repo_full_from_url(req.repo_url)
+    if not repo_full:
         raise HTTPException(status_code=400, detail="仓库地址格式有误")
     
     try:
@@ -146,11 +160,8 @@ async def trace_class(req: TraceRequest, class_name: str = ""):
     if not class_name:
         raise HTTPException(status_code=400, detail="请提供 class 名")
 
-    try:
-        parts = req.repo_url.rstrip("/").split("/")
-        repo_owner, repo_name = parts[-2], parts[-1].replace(".git", "")
-        repo_full = f"{repo_owner}/{repo_name}"
-    except Exception:
+    repo_full = repo_full_from_url(req.repo_url)
+    if not repo_full:
         raise HTTPException(status_code=400, detail="仓库地址格式有误")
 
     try:
@@ -388,6 +399,37 @@ async def repo_dashboard(repo_url: str):
     }
 
 
+@router.get("/repo/git-graph")
+async def repo_git_graph(repo_url: str):
+    """Git Graph：分支拓扑 + 合入关系（Dashboard 补充）。"""
+    if not repo_full_from_url(repo_url):
+        raise HTTPException(status_code=400, detail="仓库地址格式错误")
+    try:
+        repo_path = await asyncio.to_thread(clone_or_pull_repo, repo_url)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"仓库操作失败：{str(e)}")
+    try:
+        return await asyncio.to_thread(get_git_graph, repo_path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Git Graph 数据获取失败：{str(e)}")
+
+
+@router.get("/repo/pr-info")
+async def repo_pr_info(repo_url: str, pr_number: int):
+    """PR 详情（标题/正文/状态），供 Git Graph 展开面板应用内查看。"""
+    repo_full = repo_full_from_url(repo_url)
+    if not repo_full:
+        raise HTTPException(status_code=400, detail="仓库地址格式错误")
+    try:
+        info = await asyncio.to_thread(github.get_pr_info, repo_full, pr_number)
+    except Exception as e:
+        logger.warning("PR 查询异常 repo=%s pr=%s: %s", repo_full, pr_number, e)
+        raise HTTPException(status_code=502, detail=f"PR #{pr_number} 查询失败：{e}")
+    if info is None:
+        raise HTTPException(status_code=404, detail=f"PR #{pr_number} 信息获取失败")
+    return info
+
+
 @router.get("/repo/index-status")
 async def repo_index_status(repo_url: str):
     """SSE：仓库索引构建进度（排队/扫描/文件/符号/完成/失败）。"""
@@ -402,8 +444,10 @@ async def repo_index_status(repo_url: str):
         deadline = time.time() + 300
         not_started_deadline = time.time() + 15
         while True:
+            # 状态文件读取是本地小文件（微秒级），直接读；
+            # 新鲜度检查可能跑 git rev-parse 子进程，放线程池避免阻塞事件循环
             status = get_index_status(repo_path)
-            fresh = index_fresh(repo_path)
+            fresh = await asyncio.to_thread(index_fresh, repo_path)
             if status is None:
                 # 索引尚未启动：给后台线程写初始状态留出窗口，超时仍无则视为未开始结束
                 while (
@@ -413,7 +457,7 @@ async def repo_index_status(repo_url: str):
                 ):
                     await asyncio.sleep(2)
                     status = get_index_status(repo_path)
-                    fresh = index_fresh(repo_path)
+                    fresh = await asyncio.to_thread(index_fresh, repo_path)
                 if status is None and not fresh:
                     yield f"data: {json.dumps({'repo': repo_url, 'fresh': False, 'status': 'not_started', 'message': '索引尚未启动'}, ensure_ascii=False)}\n\n"
                     yield "data: [DONE]\n\n"
@@ -428,7 +472,7 @@ async def repo_index_status(repo_url: str):
                 or time.time() > deadline
             ):
                 break
-            await asyncio.sleep(1)
+            await asyncio.sleep(2)
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(

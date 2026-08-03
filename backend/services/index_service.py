@@ -232,6 +232,28 @@ def request_index_build(repo_path: Path) -> bool:
         return False
 
 
+def rename_index_for(repo_path_old: Path, repo_path_new: Path) -> bool:
+    """迁移索引库与构建状态文件（旧仓库名 → 新仓库名），尽力而为。"""
+    try:
+        old_db = _db_path(repo_path_old)
+        new_db = _db_path(repo_path_new)
+        for suffix in ("", "-wal", "-shm"):
+            o = Path(str(old_db) + suffix)
+            n = Path(str(new_db) + suffix)
+            if o.exists():
+                os.replace(o, n)
+        o_st = _status_path(repo_path_old)
+        n_st = _status_path(repo_path_new)
+        if o_st.exists():
+            os.replace(o_st, n_st)
+        with _BUILD_THREADS_LOCK:
+            _BUILD_THREADS.pop(Path(repo_path_old).name, None)
+        _FRESH_CACHE.pop(Path(repo_path_old).resolve(), None)
+        return True
+    except Exception:
+        return False
+
+
 # ── git 基础操作 ───────────────────────────────────────
 
 

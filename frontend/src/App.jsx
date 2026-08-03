@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import React, { useState, useEffect } from 'react'
 import IconBar from './components/IconBar'
 import TraceInput from './components/TraceInput'
 import FileTree from './components/FileTree'
@@ -7,6 +7,29 @@ import AgentPanel from './components/AgentPanel'
 import Dashboard from './components/Dashboard'
 import ThemeToggle from './components/ThemeToggle'
 import InlineAgent from './components/InlineAgent'
+
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props)
+    this.state = { hasError: false }
+  }
+
+  static getDerivedStateFromError() {
+    return { hasError: true }
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="h-full flex items-center justify-center p-8 text-sm"
+          style={{ color: 'var(--color-text-muted)' }}>
+          页面出错了，请刷新重试
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
 
 function App() {
   const [tab, setTab] = useState('trace')
@@ -77,19 +100,21 @@ function App() {
 
         {/* 内容区 */}
         <div className="flex-1 overflow-hidden">
-          {tab === 'trace' && (
-            <div className="h-full flex flex-col">
-              <TraceInput
-                onSearch={handleTraceSearch}
-                onRepoChange={setCurrentRepoUrl}
-                externalFile={selectedFile}
-                externalFunction={selectedFunction}
-              />
-              {timeline && <Timeline data={timeline} repoUrl={currentRepoUrl} onAskAgent={handleAskAgent} />}
-            </div>
-          )}
-          {tab === 'agent' && <AgentPanel initialRepo={currentRepoUrl} />}
-          {tab === 'dashboard' && <Dashboard />}
+          <ErrorBoundary>
+            {tab === 'trace' && (
+              <div className="h-full flex flex-col">
+                <TraceInput
+                  onSearch={handleTraceSearch}
+                  onRepoChange={setCurrentRepoUrl}
+                  externalFile={selectedFile}
+                  externalFunction={selectedFunction}
+                />
+                {timeline && <Timeline data={timeline} repoUrl={currentRepoUrl} onAskAgent={handleAskAgent} />}
+              </div>
+            )}
+            {tab === 'agent' && <AgentPanel initialRepo={currentRepoUrl} />}
+            {tab === 'dashboard' && <Dashboard onAskAgent={handleAskAgent} />}
+          </ErrorBoundary>
         </div>
       </div>
 

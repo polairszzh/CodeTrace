@@ -1,26 +1,29 @@
 import { useState, useEffect } from 'react'
 import RepoInput from './RepoInput'
+import GitGraph from './GitGraph'
 
-function Dashboard() {
+function Dashboard({ onAskAgent }) {
   const [repoUrl, setRepoUrl] = useState('')
+  const [draft, setDraft] = useState('')
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search)
-    const repo = params.get('repo')
-    if (repo) setRepoUrl(repo)
-  }, [])
+  const confirmRepo = (url) => {
+    const u = (url || draft || '').trim()
+    if (!u) return
+    setDraft(u)
+    setRepoUrl(u)
+  }
 
   useEffect(() => {
     if (!repoUrl) { setData(null); return }
     setLoading(true)
     setError('')
     fetch(`/api/repo/dashboard?repo_url=${encodeURIComponent(repoUrl)}`)
-      .then(r => r.json())
+      .then(r => r.ok ? r.json() : r.json().then(d => Promise.reject(new Error(d?.detail || `请求失败 (HTTP ${r.status})`))))
       .then(d => { setData(d); setLoading(false) })
-      .catch(e => { setError(e.message); setLoading(false) })
+      .catch(e => { setError(e.message || String(e)); setLoading(false) })
   }, [repoUrl])
 
   if (!repoUrl) {
@@ -28,8 +31,13 @@ function Dashboard() {
       <div className="h-full flex flex-col items-center justify-center gap-4 p-8">
         <h2 className="text-lg font-semibold" style={{ color: 'var(--color-text-heading)' }}>项目仪表盘</h2>
         <p className="text-sm" style={{ color: 'var(--color-text-muted)' }}>输入仓库 URL 查看项目全景</p>
-        <div style={{ width: '400px' }}>
-          <RepoInput value={repoUrl} onChange={setRepoUrl} onReady={() => {}} />
+        <div className="flex gap-2" style={{ width: '440px' }}>
+          <RepoInput value={draft} onChange={setDraft} onReady={confirmRepo} confirmOnBlur={false} />
+          <button onClick={() => confirmRepo(draft)}
+            className="px-3 py-2 rounded-lg text-sm font-medium flex-shrink-0"
+            style={{ background: 'var(--color-accent)', color: '#fff', border: 'none' }}>
+            确认
+          </button>
         </div>
       </div>
     )
@@ -38,8 +46,13 @@ function Dashboard() {
   return (
     <div className="h-full flex flex-col p-6 gap-5 overflow-y-auto">
       {/* Header */}
-      <div className="flex items-center gap-3">
-        <RepoInput value={repoUrl} onChange={setRepoUrl} onReady={() => {}} />
+      <div className="flex items-center gap-2">
+        <RepoInput value={draft} onChange={setDraft} onReady={confirmRepo} confirmOnBlur={false} />
+        <button onClick={() => confirmRepo(draft)}
+          className="px-3 py-2 rounded-lg text-sm font-medium flex-shrink-0"
+          style={{ background: 'var(--color-accent)', color: '#fff', border: 'none' }}>
+          确认
+        </button>
       </div>
 
       {loading && (
@@ -58,9 +71,9 @@ function Dashboard() {
         <div className="flex flex-col gap-5">
           {/* ── Summary cards ── */}
           <div className="grid grid-cols-3 gap-4">
-            <SummaryCard label="总提交数" value={data.summary.total_commits} color="#c084fc" />
-            <SummaryCard label="文件数" value={data.summary.total_files} color="#58a6ff" />
-            <SummaryCard label="贡献者" value={data.summary.total_authors} color="#38a169" />
+            <SummaryCard label="总提交数" value={data.summary?.total_commits ?? 0} color="#c084fc" />
+            <SummaryCard label="文件数" value={data.summary?.total_files ?? 0} color="#58a6ff" />
+            <SummaryCard label="贡献者" value={data.summary?.total_authors ?? 0} color="#38a169" />
           </div>
 
           {/* ── Risk distribution + Top files ── */}
@@ -69,16 +82,16 @@ function Dashboard() {
             <div className="rounded-xl p-5" style={{ background: 'var(--color-surface-card)', border: '1px solid var(--color-border)' }}>
               <h3 className="text-sm font-semibold mb-4" style={{ color: 'var(--color-text-heading)' }}>文件风险分布</h3>
               <div className="flex flex-col gap-3">
-                <RiskBar label="高风险" count={data.risk_distribution.high} color="#e53e3e" />
-                <RiskBar label="中风险" count={data.risk_distribution.medium} color="#d69e2e" />
-                <RiskBar label="低风险" count={data.risk_distribution.low} color="#38a169" />
+                <RiskBar label="高风险" count={data.risk_distribution?.high ?? 0} color="#e53e3e" />
+                <RiskBar label="中风险" count={data.risk_distribution?.medium ?? 0} color="#d69e2e" />
+                <RiskBar label="低风险" count={data.risk_distribution?.low ?? 0} color="#38a169" />
               </div>
             </div>
 
             {/* Top changed files */}
             <div className="rounded-xl p-5" style={{ background: 'var(--color-surface-card)', border: '1px solid var(--color-border)' }}>
               <h3 className="text-sm font-semibold mb-4" style={{ color: 'var(--color-text-heading)' }}>变更最频繁的文件</h3>
-              {data.summary.top_files.length === 0 ? (
+              {(data.summary?.top_files || []).length === 0 ? (
                 <div className="text-xs" style={{ color: 'var(--color-text-muted)' }}>暂无数据</div>
               ) : (
                 <div className="flex flex-col gap-1">
@@ -98,9 +111,9 @@ function Dashboard() {
           <div className="rounded-xl p-5" style={{ background: 'var(--color-surface-card)', border: '1px solid var(--color-border)' }}>
             <h3 className="text-sm font-semibold mb-3" style={{ color: 'var(--color-text-heading)' }}>近期提交</h3>
             <div className="flex flex-col gap-0.5">
-              {data.summary.recent_commits.map((c, i) => (
+              {(data.summary?.recent_commits || []).map((c, i) => (
                 <div key={i} className="flex items-center gap-3 py-1.5 text-xs border-b"
-                  style={{ borderColor: 'var(--color-border)', borderBottomWidth: i < data.summary.recent_commits.length - 1 ? '1px' : '0' }}>
+                  style={{ borderColor: 'var(--color-border)', borderBottomWidth: i < (data.summary?.recent_commits || []).length - 1 ? '1px' : '0' }}>
                   <span className="font-mono flex-shrink-0" style={{ color: 'var(--color-text-muted)', width: '10ch' }}>
                     {c.date}
                   </span>
@@ -114,6 +127,9 @@ function Dashboard() {
               ))}
             </div>
           </div>
+
+          {/* ── Git Graph：分支拓扑 + 合入关系 ── */}
+          <GitGraph repoUrl={repoUrl} onAskAgent={onAskAgent} />
         </div>
       )}
     </div>

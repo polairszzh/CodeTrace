@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 
 
@@ -31,3 +31,4 @@ class TraceResponse(BaseModel):
     file_path: str
     timeline: list[TimelineNode]
     commit_count: int
+    warnings: list[str] = Field(default_factory=list)
