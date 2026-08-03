@@ -107,7 +107,7 @@ def _new_commits(repo_path: Path, from_head: Optional[str]) -> list[dict]:
         return commits
     except Exception as e:
         logger.warning("读取新提交失败 %s: %s", repo_path, e)
-        return []
+        return None
 
 
 def _range_churn(repo_path: Path, from_head: Optional[str], limit: int = 30) -> list[dict]:
@@ -155,7 +155,7 @@ def _range_churn(repo_path: Path, from_head: Optional[str], limit: int = 30) -> 
         return [{"file": f, **stats} for f, stats in ranked]
     except Exception as e:
         logger.warning("读取区间 churn 失败 %s: %s", repo_path, e)
-        return []
+        return None
 
 
 def _prs_from_commits(commits: list[dict]) -> list[dict]:

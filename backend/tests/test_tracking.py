@@ -204,6 +204,19 @@ def test_unquote_git_path():
     assert tracking_service._unquote_git_path('"my file.py"') == "my file.py"
 
 
+def test_git_exception_returns_none(tmp_path, monkeypatch):
+    """subprocess 异常与 git 失败一致返回 None，不当作“无新提交”。"""
+    monkeypatch.setenv("CODETRACE_INDEX_DIR", str(tmp_path / "index"))
+    repo = _make_repo(tmp_path, [("feat: init (#1)", 5)])
+
+    def boom(*a, **kw):
+        raise OSError("boom")
+
+    monkeypatch.setattr(tracking_service.subprocess, "run", boom)
+    assert tracking_service._new_commits(repo, "abc123") is None
+    assert tracking_service._range_churn(repo, "abc123") is None
+
+
 def test_empty_repo_no_crash(tmp_path, monkeypatch):
     """空仓库（无提交）不崩溃，不产生快照。"""
     monkeypatch.setenv("CODETRACE_INDEX_DIR", str(tmp_path / "index"))

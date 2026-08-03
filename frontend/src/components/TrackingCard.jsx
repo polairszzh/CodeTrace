@@ -19,6 +19,7 @@ function TrackingCard({ repoUrl }) {
   const load = (showLoading = true) => {
     if (!repoUrl) return
     const url = repoUrl
+    if (timerRef.current) clearTimeout(timerRef.current)
     abortRef.current?.abort()
     const controller = new AbortController()
     abortRef.current = controller
