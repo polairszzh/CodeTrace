@@ -397,6 +397,8 @@ async def repo_dashboard(repo_url: str):
 @router.get("/repo/git-graph")
 async def repo_git_graph(repo_url: str):
     """Git Graph：分支拓扑 + 合入关系（Dashboard 补充）。"""
+    if not repo_full_from_url(repo_url):
+        raise HTTPException(status_code=400, detail="仓库地址格式错误")
     try:
         repo_path = await asyncio.to_thread(clone_or_pull_repo, repo_url)
     except Exception as e:
