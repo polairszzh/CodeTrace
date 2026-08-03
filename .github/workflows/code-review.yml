@@ -15,6 +15,7 @@ jobs:
 
       - name: Get PR diff
         run: |
+          git diff origin/${{ github.base_ref }}...HEAD --stat > /tmp/pr.stat
           git diff origin/${{ github.base_ref }}...HEAD -- . \
             ':(exclude).github/workflows/*' > /tmp/pr.diff
 
@@ -27,7 +28,13 @@ jobs:
         with:
           script: |
             const fs = require("fs");
-            const diff = fs.readFileSync("/tmp/pr.diff", "utf-8").slice(0, 12000);
+            const stat = fs.existsSync("/tmp/pr.stat")
+              ? fs.readFileSync("/tmp/pr.stat", "utf-8")
+              : "";
+            const MAX_DIFF = 80000;
+            const rawDiff = fs.readFileSync("/tmp/pr.diff", "utf-8");
+            const truncated = rawDiff.length > MAX_DIFF;
+            const diff = rawDiff.slice(0, MAX_DIFF);
             if (!diff.trim()) {
               await github.rest.issues.createComment({
                 issue_number: context.issue.number,
@@ -36,12 +43,35 @@ jobs:
               });
               return;
             }
-            const systemMsg = "You are a code review assistant. Review the PR diff. Write in Chinese. Format:\n## Summary\nOne-line overview.\n## Issues\n- critical: line description\n- suggestion: line suggestion\n## Highlights\n- good designs or notable changes\nIf no issues, reply LGTM. Max 500 chars.";
+            const systemMsg = `You are a code review assistant. Review this PR's FULL diff (base...HEAD, including all commits). Write in Chinese.
+
+            Rules (must follow):
+            - Only report issues you can VERIFY within the provided diff. If the relevant code is not visible (definition/call site in another file, or diff truncated), do NOT claim it is missing, unused, or will crash/error; mark it as "待确认" or skip it.
+            - Never speculate about ImportError / KeyError / 500 / race conditions unless the involved code is visible in the diff and the problem is real.
+            - Do not re-report problems the code already handles (e.g., dict.get() with defaults, try/except already present, retry/fallback already implemented).
+            - Focus on the changed lines only; do not invent issues about unchanged code.
+            - If you cannot find any verifiable issue, reply exactly: LGTM
+
+            Format:
+            ## Summary
+            One-line overview.
+            ## Issues
+            - critical: description
+            - suggestion: description
+            ## Highlights
+            - good designs or notable changes
+            Max 500 chars.`;
             const payload = {
               model: process.env.LLM_MODEL,
               messages: [
                 { role: "system", content: systemMsg },
-                { role: "user", content: "PR diff:\n" + diff },
+                {
+                  role: "user",
+                  content:
+                    "Changed files:\n" + stat +
+                    "\n\nPR diff (base...HEAD, truncated at " + MAX_DIFF +
+                    " chars" + (truncated ? "; tail cut off — code not visible in the diff must not be asserted as missing" : "") + "):\n" + diff,
+                },
               ],
               temperature: 0.1,
             };
