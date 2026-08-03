@@ -140,6 +140,31 @@ def test_delta_error_skips_snapshot(tmp_path, monkeypatch):
     assert data["latest_report"]["generated_by"] == "baseline"  # 报告未被覆盖
 
 
+def test_refresh_error_backoff(tmp_path, monkeypatch):
+    """刷新失败后记录 refresh_error，5 分钟内不再重复触发后台任务。"""
+    monkeypatch.setenv("CODETRACE_INDEX_DIR", str(tmp_path / "index"))
+    tracking_service._TRACKING_THREADS.clear()
+    repo = _make_repo(tmp_path, [("feat: init (#1)", 5)])
+    tracking_service.refresh_tracking(repo, llm=FakeLLM())
+
+    (repo / "f0.py").write_text("# changed\n", encoding="utf-8")
+    _commit(repo, "feat: next (#2)", _date(1))
+    monkeypatch.setattr(tracking_service, "_new_commits", lambda *a, **kw: None)
+    monkeypatch.setattr(tracking_service, "_range_churn", lambda *a, **kw: None)
+
+    data = tracking_service.refresh_tracking(repo, llm=FakeLLM())
+    assert data.get("refresh_error") is not None
+    assert tracking_service.request_tracking(repo) is False  # 退避中
+
+    # 模拟退避窗口已过（清除错误标记）→ 可再次触发
+    store = tracking_service._load(repo)
+    store.pop("refresh_error", None)
+    tracking_service._save(repo, store)
+    monkeypatch.setattr(tracking_service, "_new_commits", lambda *a, **kw: [])
+    monkeypatch.setattr(tracking_service, "_range_churn", lambda *a, **kw: [])
+    assert tracking_service.request_tracking(repo) is True
+
+
 def test_empty_repo_no_crash(tmp_path, monkeypatch):
     """空仓库（无提交）不崩溃，不产生快照。"""
     monkeypatch.setenv("CODETRACE_INDEX_DIR", str(tmp_path / "index"))
@@ -182,6 +207,7 @@ def test_llm_failure_fallback(tmp_path, monkeypatch):
 
 def test_request_tracking_background(tmp_path, monkeypatch):
     monkeypatch.setenv("CODETRACE_INDEX_DIR", str(tmp_path / "index"))
+    tracking_service._TRACKING_THREADS.clear()
     repo = _make_repo(tmp_path, [("feat: init (#1)", 5)])
     assert tracking_service.request_tracking(repo) is True
 

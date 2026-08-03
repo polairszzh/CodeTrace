@@ -22,7 +22,15 @@ function TrackingCard({ repoUrl }) {
     setError('')
     fetch(`/api/repo/tracking?repo_url=${encodeURIComponent(url)}`)
       .then(r => r.ok ? r.json() : r.json().then(d => Promise.reject(new Error(d?.detail || `请求失败 (HTTP ${r.status})`))))
-      .then(d => { if (repoRef.current === url) { setData(d); setLoading(false) } })
+      .then(d => {
+        if (repoRef.current !== url) return
+        setData(d)
+        setLoading(false)
+        // 后台仍在生成 → 自调度下一次轮询（不依赖 effect 依赖值，避免只触发一次）
+        if (d.status === 'refreshing') {
+          timerRef.current = setTimeout(() => load(false), 3000)
+        }
+      })
       .catch(e => { if (repoRef.current === url) { setError(e.message || String(e)); setLoading(false) } })
   }
 
@@ -31,14 +39,6 @@ function TrackingCard({ repoUrl }) {
     if (repoUrl) load()
     return () => { if (timerRef.current) clearTimeout(timerRef.current) }
   }, [repoUrl])
-
-  // 后台生成中 → 每 3 秒轮询一次直到 ready
-  useEffect(() => {
-    if (data?.status === 'refreshing' && repoUrl) {
-      timerRef.current = setTimeout(() => load(false), 3000)
-    }
-    return () => { if (timerRef.current) clearTimeout(timerRef.current) }
-  }, [data?.status, repoUrl])
 
   if (!repoUrl) return null
 

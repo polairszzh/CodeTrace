@@ -498,8 +498,12 @@ async def repo_tracking(repo_url: str):
         data["message"] = "仓库没有提交，无法建立追踪基线"
         return data
     if data.get("stale"):
-        tracking_service.request_tracking(repo_path)
-        data["status"] = "refreshing"
+        if data.get("refresh_error"):
+            data["status"] = "error"
+            data["message"] = "增量计算暂不可用：" + str(data["refresh_error"].get("message", "未知原因"))
+        else:
+            tracking_service.request_tracking(repo_path)
+            data["status"] = "refreshing"
     else:
         data["status"] = "ready"
     return data

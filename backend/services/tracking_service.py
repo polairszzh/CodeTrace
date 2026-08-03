@@ -28,6 +28,7 @@ _TRACKING_THREADS: dict[str, threading.Thread] = {}
 _TRACKING_THREADS_LOCK = threading.Lock()
 _STORE_LOCK = threading.Lock()
 _MAX_SNAPSHOTS = 10
+_REFRESH_ERROR_BACKOFF = 300  # 秒：刷新失败后 5 分钟内不重复触发后台任务
 
 
 def _now() -> str:
@@ -317,8 +318,11 @@ def refresh_tracking(repo_path, llm=None) -> dict:
         delta = _compute_delta(repo_path, old, head)
         if delta.get("error"):
             logger.warning("追踪增量计算失败 %s: %s", repo_path, delta["error"])
+            data["refresh_error"] = {"at": _now(), "message": str(delta.get("error"))}
+            _save(repo_path, data)
             return data  # 区间不可读时跳过本次刷新，不生成误导报告
         report = _generate_report(delta, llm)
+        data.pop("refresh_error", None)
 
         from services.git_service import get_top_changed_files  # 延迟导入避免循环依赖
         try:
@@ -372,6 +376,9 @@ def request_tracking(repo_path) -> bool:
     try:
         repo_path = Path(repo_path)
         name = repo_path.name
+        err = _load(repo_path).get("refresh_error")
+        if err and _within_backoff(err.get("at")):
+            return False
         with _TRACKING_THREADS_LOCK:
             existing = _TRACKING_THREADS.get(name)
             if existing and existing.is_alive():
@@ -383,5 +390,15 @@ def request_tracking(repo_path) -> bool:
             _TRACKING_THREADS[name] = t
             t.start()
             return True
+    except Exception:
+        return False
+
+
+def _within_backoff(at: Optional[str]) -> bool:
+    if not at:
+        return False
+    try:
+        ts = datetime.fromisoformat(at).timestamp()
+        return time.time() - ts < _REFRESH_ERROR_BACKOFF
     except Exception:
         return False
