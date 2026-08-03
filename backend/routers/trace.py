@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from models.schemas import TraceRequest, TraceResponse, TimelineNode, DiffStats
-from services.git_service import clone_or_pull_repo, repo_path_for_url, get_file_commits, get_commit_diff_stats, list_files_at_commit, get_file_content_at_commit, get_file_commit_counts, get_repo_summary
+from services.git_service import clone_or_pull_repo, repo_path_for_url, get_file_commits, get_commit_diff_stats, list_files_at_commit, get_file_content_at_commit, get_file_commit_counts, get_repo_summary, get_git_graph
 from services.github_service import GitHubClient
 from services.llm_service import LLMService
 from services.ast_service import trace_function_across_commits, trace_class_across_commits, extract_symbols_fast
@@ -386,6 +386,34 @@ async def repo_dashboard(repo_url: str):
         "summary": summary,
         "risk_distribution": risk_dist,
     }
+
+
+@router.get("/repo/git-graph")
+async def repo_git_graph(repo_url: str):
+    """Git Graph：分支拓扑 + 合入关系（Dashboard 补充）。"""
+    try:
+        repo_path = await asyncio.to_thread(clone_or_pull_repo, repo_url)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"仓库操作失败：{str(e)}")
+    try:
+        return await asyncio.to_thread(get_git_graph, repo_path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Git Graph 数据获取失败：{str(e)}")
+
+
+@router.get("/repo/pr-info")
+async def repo_pr_info(repo_url: str, pr_number: int):
+    """PR 详情（标题/正文/状态），供 Git Graph 展开面板应用内查看。"""
+    try:
+        parts = repo_url.rstrip("/").split("/")
+        repo_owner, repo_name = parts[-2], parts[-1].replace(".git", "")
+        repo_full = f"{repo_owner}/{repo_name}"
+    except Exception:
+        raise HTTPException(status_code=400, detail="仓库地址格式错误")
+    info = await asyncio.to_thread(github.get_pr_info, repo_full, pr_number)
+    if info is None:
+        raise HTTPException(status_code=404, detail=f"PR #{pr_number} 信息获取失败")
+    return info
 
 
 @router.get("/repo/index-status")

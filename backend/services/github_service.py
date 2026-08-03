@@ -1,9 +1,27 @@
 import re
+import logging
+import os
 import httpx
 
 from services.index_service import get_cached_pr, set_cached_pr
 
+logger = logging.getLogger(__name__)
+
 GITHUB_API_URL = "https://api.github.com"
+
+
+def _http_proxy() -> str | None:
+    """与 git 同步的显式代理配置（CODETRACE_GIT_PROXY），跨系统统一。"""
+    return os.getenv("CODETRACE_GIT_PROXY", "").strip() or None
+
+
+def _api_get(url: str, headers: dict, timeout: int = 15):
+    """GitHub API GET：显式代理优先，否则走系统默认（env 代理/直连）。"""
+    proxy = _http_proxy()
+    if proxy:
+        with httpx.Client(proxy=proxy) as client:
+            return client.get(url, headers=headers, timeout=timeout)
+    return httpx.get(url, headers=headers, timeout=timeout)
 
 
 class GitHubClient:
@@ -45,7 +63,7 @@ class GitHubClient:
 
         url = f"{GITHUB_API_URL}/repos/{repo_full}/pulls/{pr_number}"
         try:
-            resp = httpx.get(url, headers=self.headers, timeout=15)
+            resp = _api_get(url, self.headers)
             resp.raise_for_status()
             data = resp.json()
             result = {
@@ -58,6 +76,7 @@ class GitHubClient:
             set_cached_pr(repo_full, pr_number, result)
             return result
         except Exception as e:
+            logger.warning("GitHub API get_pr_info 失败 repo=%s pr=%s: %r", repo_full, pr_number, e)
             return None
         
     def get_pr_discussion(self, repo_full: str, pr_number: int) -> list[dict]:
@@ -73,7 +92,7 @@ class GitHubClient:
         """
         url = f"{GITHUB_API_URL}/repos/{repo_full}/pulls/{pr_number}/comments"
         try:
-            resp = httpx.get(url, headers=self.headers, timeout=15)
+            resp = _api_get(url, self.headers)
             resp.raise_for_status()
             data = resp.json()
             return [

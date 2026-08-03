@@ -1,5 +1,6 @@
 import os
 import re
+import logging
 import subprocess
 import time
 from pathlib import Path
@@ -9,10 +10,14 @@ import httpx
 
 from services import index_service
 
+logger = logging.getLogger(__name__)
+
 CACHE_DIR = Path(os.getenv("CODETRACE_CACHE", "/tmp/codetrace"))
 _CLONE_THRESHOLD_DEFAULT_KB = 1024 * 1024  # 1GB
 _SIZE_CACHE: dict[str, tuple[int | None, float]] = {}
 _SIZE_CACHE_TTL = 3600  # 秒
+_GIT_GRAPH_CACHE: dict[str, tuple[float, dict]] = {}
+_GIT_GRAPH_TTL = 300  # 秒，Dashboard 重复打开/刷新免重复计算
 
 # 内存缓存：repo_url → (repo_path, timestamp)
 _cache = {}
@@ -79,13 +84,47 @@ def _maybe_cleanup():
 def _remote_head(repo_url: str) -> str | None:
     """获取远程仓库 HEAD 的 commit hash。返回 None 表示远程不可达。"""
     try:
-        result = subprocess.run(
-            ["git", "ls-remote", repo_url, "HEAD"],
-            capture_output=True, text=True, timeout=15,
-        )
+        result = _run_git_with_proxy_fallback(["ls-remote", repo_url, "HEAD"], timeout=15)
         return result.stdout.split()[0] if result.stdout.strip() else None
-    except Exception:
+    except Exception as e:
+        logger.warning("git ls-remote 失败 repo=%s: %s", repo_url, e)
         return None
+
+
+def _git_net_args(extra_args: list[str]) -> list[str]:
+    """git 网络命令参数：CODETRACE_GIT_PROXY 显式代理优先，否则继承用户 git 配置。"""
+    proxy = os.getenv("CODETRACE_GIT_PROXY", "").strip()
+    if proxy:
+        return ["git", "-c", f"http.proxy={proxy}", "-c", f"https.proxy={proxy}"] + extra_args
+    return ["git"] + extra_args
+
+
+def _run_git_with_proxy_fallback(
+    extra_args: list[str], cwd=None, timeout: int = 120
+) -> subprocess.CompletedProcess:
+    """
+    运行 git 网络命令（兼容不同用户的代理环境）：
+    1. 先按配置执行（显式代理或用户 git 配置中的代理）；
+    2. 失败后清空代理直连重试一次（覆盖代理配置错误/代理未运行但可直连的场景）。
+    """
+    first = _git_net_args(extra_args)
+    try:
+        r = subprocess.run(
+            first, cwd=cwd, capture_output=True, text=True, encoding="utf-8", timeout=timeout,
+        )
+        if r.returncode == 0:
+            return r
+    except Exception:
+        pass
+    direct = ["git", "-c", "http.proxy=", "-c", "https.proxy="] + extra_args
+    r2 = subprocess.run(
+        direct, cwd=cwd, capture_output=True, text=True, encoding="utf-8", timeout=timeout,
+    )
+    if r2.returncode != 0:
+        raise subprocess.CalledProcessError(
+            r2.returncode, direct, output=r2.stdout, stderr=r2.stderr
+        )
+    return r2
 
 
 def _request_index_background(repo_path: Path):
@@ -127,10 +166,18 @@ def _repo_size_kb(repo_url: str) -> int | None:
         token = os.getenv("GITHUB_TOKEN", "")
         if token:
             headers["Authorization"] = f"Bearer {token}"
-        resp = httpx.get(
-            f"https://api.github.com/repos/{owner}/{name}",
-            headers=headers, timeout=10,
-        )
+        proxy = os.getenv("CODETRACE_GIT_PROXY", "").strip()
+        if proxy:
+            with httpx.Client(proxy=proxy) as client:
+                resp = client.get(
+                    f"https://api.github.com/repos/{owner}/{name}",
+                    headers=headers, timeout=10,
+                )
+        else:
+            resp = httpx.get(
+                f"https://api.github.com/repos/{owner}/{name}",
+                headers=headers, timeout=10,
+            )
         resp.raise_for_status()
         size = resp.json().get("size")
         size_kb = int(size) if size else None
@@ -195,27 +242,28 @@ def clone_or_pull_repo(repo_url: str) -> Path:
         locked = _acquire_lock(repo_name)
         try:
             full_clone = _should_full_clone(repo_url)
-            clone_args = ["git", "clone"]
+            clone_args = ["clone"]
             if not full_clone:
                 clone_args.append("--depth=500")
             clone_args += [repo_url, str(repo_path)]
             try:
-                subprocess.run(
-                    clone_args, check=True, timeout=600 if full_clone else 120,
+                _run_git_with_proxy_fallback(
+                    clone_args, timeout=600 if full_clone else 120,
                 )
             except subprocess.TimeoutExpired:
                 # 超时：清掉半成品，降级浅克隆
                 import shutil
                 if repo_path.parent == CACHE_DIR:
                     shutil.rmtree(repo_path, ignore_errors=True)
-                subprocess.run(
-                    ["git", "clone", "--depth=500", repo_url, str(repo_path)],
-                    check=True, timeout=600,
+                _run_git_with_proxy_fallback(
+                    ["clone", "--depth=500", repo_url, str(repo_path)],
+                    timeout=600,
                 )
         finally:
             if locked:
                 _release_lock(repo_name)
         _request_index_background(repo_path)
+        invalidate_git_graph_cache(repo_path)
         _cache[repo_url] = (repo_path, time.time())
         return repo_path
 
@@ -242,14 +290,15 @@ def clone_or_pull_repo(repo_url: str) -> Path:
     # 不一致 → pull（加锁防并发）
     locked = _acquire_lock(repo_name)
     try:
-        pull_args = ["git", "pull"]
+        pull_args = ["pull"]
         if _is_shallow_repo(repo_path):
             pull_args.append("--depth=500")
-        subprocess.run(
-            pull_args, cwd=repo_path, check=True, timeout=300,
+        _run_git_with_proxy_fallback(
+            pull_args, cwd=repo_path, timeout=300,
         )
-    except Exception:
-        pass
+        invalidate_git_graph_cache(repo_path)
+    except Exception as e:
+        logger.warning("git pull 失败 repo=%s: %s", repo_path, e)
     finally:
         if locked:
             _release_lock(repo_name)
@@ -1063,3 +1112,206 @@ def get_file_change_context(repo_path: Path, file_path: str, count: int = 10) ->
         })
 
     return commits
+
+
+# ── Git Graph（Dashboard 分支拓扑 + 合入关系） ─────────────
+
+
+def _default_branch(repo_path: Path) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "symbolic-ref", "--short", "HEAD"],
+            cwd=repo_path, capture_output=True, text=True, timeout=10,
+        )
+        name = result.stdout.strip()
+        return name if name else "main"
+    except Exception:
+        return "main"
+
+
+def _count_commits(repo_path: Path, ref: str) -> int:
+    try:
+        result = subprocess.run(
+            ["git", "rev-list", "--count", ref],
+            cwd=repo_path, capture_output=True, text=True, timeout=15,
+        )
+        return int(result.stdout.strip() or 0)
+    except Exception:
+        return 0
+
+
+def _list_branches(repo_path: Path, default_branch: str) -> list[dict]:
+    """本地分支列表：HEAD 信息 + 相对默认分支的领先/落后 + 提交数。"""
+    result = subprocess.run(
+        [
+            "git", "for-each-ref",
+            "--format=%(refname:short)|%(objectname)|%(authordate:iso8601)|%(authorname)|%(subject)",
+            "refs/heads",
+        ],
+        cwd=repo_path, capture_output=True, text=True, encoding="utf-8", timeout=30,
+    )
+    branches = []
+    for line in result.stdout.strip().split("\n"):
+        if not line:
+            continue
+        parts = line.split("|", 4)
+        if len(parts) < 5:
+            continue
+        name, head, date, author, subject = parts
+        branches.append({
+            "name": name,
+            "head": head,
+            "head_date": date,
+            "head_author": author,
+            "subject": subject,
+            "is_default": name == default_branch,
+        })
+
+    for b in branches:
+        b["total_commits"] = _count_commits(repo_path, b["name"])
+        if b["is_default"]:
+            b["ahead"] = 0
+            b["behind"] = 0
+            continue
+        try:
+            lr = subprocess.run(
+                ["git", "rev-list", "--left-right", "--count", f"{default_branch}...{b['name']}"],
+                cwd=repo_path, capture_output=True, text=True, timeout=15,
+            )
+            counts = lr.stdout.split()
+            left = int(counts[0]) if len(counts) > 0 and counts[0].isdigit() else 0
+            right = int(counts[1]) if len(counts) > 1 and counts[1].isdigit() else 0
+            b["behind"] = left   # 默认分支有而该分支没有
+            b["ahead"] = right   # 该分支独有的提交
+        except Exception:
+            b["ahead"] = 0
+            b["behind"] = 0
+
+    branches.sort(key=lambda x: (not x["is_default"], -x.get("ahead", 0)))
+    return branches
+
+
+def _list_merges(repo_path: Path, count: int = 30) -> list[dict]:
+    """最近 N 个 merge commit（含 parents，用于合入关系展示）。"""
+    result = subprocess.run(
+        ["git", "log", "--all", "--merges", f"-{count}", "--pretty=format:%H|%P|%an|%ai|%s"],
+        cwd=repo_path, capture_output=True, text=True, encoding="utf-8", timeout=30,
+    )
+    merges = []
+    for line in result.stdout.strip().split("\n"):
+        if not line:
+            continue
+        parts = line.split("|", 4)
+        if len(parts) < 5:
+            continue
+        hash_, parents, author, date, message = parts
+        merges.append({
+            "hash": hash_,
+            "short": hash_[:7],
+            "parents": [p for p in parents.split() if p],
+            "author": author,
+            "date": date,
+            "message": message,
+        })
+    return merges
+
+
+_PR_RE = re.compile(r"\(#(\d+)\)")
+
+
+def _pr_number(message: str) -> int | None:
+    """从 commit message 提取 PR 编号（约定格式：...(#N)）。"""
+    m = _PR_RE.search(message or "")
+    return int(m.group(1)) if m else None
+
+
+def _commit_dag(repo_path: Path, limit: int = 200) -> tuple[list[dict], list[dict]]:
+    """最近 N 个提交的 DAG（节点 + 父子边，新→旧）。"""
+    info = subprocess.run(
+        ["git", "rev-list", "--all", f"--max-count={limit}", "--pretty=format:%H|%an|%ai|%s"],
+        cwd=repo_path, capture_output=True, text=True, encoding="utf-8", timeout=60,
+    )
+    parents_run = subprocess.run(
+        ["git", "rev-list", "--all", "--parents", f"--max-count={limit}"],
+        cwd=repo_path, capture_output=True, text=True, timeout=60,
+    )
+    parent_map = {}
+    for line in parents_run.stdout.strip().split("\n"):
+        if not line:
+            continue
+        parts = line.split()
+        if parts:
+            parent_map[parts[0]] = parts[1:]
+
+    refs_run = subprocess.run(
+        ["git", "for-each-ref", "--format=%(refname:short)|%(objectname)", "refs/heads"],
+        cwd=repo_path, capture_output=True, text=True, timeout=15,
+    )
+    ref_map = {}
+    for line in refs_run.stdout.strip().split("\n"):
+        if not line:
+            continue
+        name, head = line.split("|", 1)
+        ref_map.setdefault(head, []).append(name)
+
+    nodes = []
+    edges = []
+    for line in info.stdout.strip().split("\n"):
+        if not line:
+            continue
+        parts = line.split("|", 4)
+        if len(parts) < 4:
+            continue
+        hash_, author, date, message = parts
+        parents = parent_map.get(hash_, [])
+        nodes.append({
+            "id": hash_,
+            "short": hash_[:7],
+            "author": author,
+            "date": date,
+            "message": message,
+            "is_merge": len(parents) >= 2,
+            "parents": parents,
+            "refs": ref_map.get(hash_, []),
+            "pr_number": _pr_number(message),
+        })
+        for p in parents:
+            edges.append({"source": hash_, "target": p})
+    return nodes, edges
+
+
+def get_git_graph(repo_path: Path, limit: int = 200) -> dict:
+    """
+    获取分支拓扑 + 合入关系数据（Dashboard「分支拓扑」卡片）。
+
+    Returns:
+        dict: {
+            "default_branch": str,
+            "branches": [{name, head, head_date, head_author, subject, ahead, behind, total_commits, is_default}],
+            "merges": [{hash, short, parents, author, date, message}],
+            "graph": {"nodes": [{id, short, author, date, message, is_merge, refs}],
+                      "edges": [{source, target}]},
+        }
+    """
+    key = str(Path(repo_path).resolve())
+    cached = _GIT_GRAPH_CACHE.get(key)
+    if cached and time.time() - cached[0] < _GIT_GRAPH_TTL:
+        return cached[1]
+
+    default_branch = _default_branch(repo_path)
+    result = {
+        "default_branch": default_branch,
+        "branches": _list_branches(repo_path, default_branch),
+        "merges": _list_merges(repo_path),
+        "graph": dict(zip(("nodes", "edges"), _commit_dag(repo_path, limit=limit))),
+    }
+    _GIT_GRAPH_CACHE[key] = (time.time(), result)
+    return result
+
+
+def invalidate_git_graph_cache(repo_path: Path):
+    """仓库发生 clone/pull 后清空对应缓存。"""
+    try:
+        _GIT_GRAPH_CACHE.pop(str(Path(repo_path).resolve()), None)
+    except Exception:
+        pass

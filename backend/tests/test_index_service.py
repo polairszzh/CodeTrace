@@ -340,6 +340,39 @@ def test_repo_path_sanitized(tmp_path, monkeypatch):
     assert p.resolve().is_relative_to(git_service.CACHE_DIR.resolve())
 
 
+def test_remote_head_proxy_fallback(monkeypatch):
+    """git 网络命令：配置代理失败后自动清空代理直连重试。"""
+    monkeypatch.delenv("CODETRACE_GIT_PROXY", raising=False)
+    calls = []
+
+    class FakeResult:
+        returncode = 0
+        stdout = "abc123deadbeef\tHEAD\n"
+        stderr = ""
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        if len(calls) == 1:
+            raise subprocess.TimeoutExpired(cmd, timeout=15)
+        return FakeResult()
+
+    monkeypatch.setattr(git_service.subprocess, "run", fake_run)
+    head = git_service._remote_head("https://github.com/owner/repo.git")
+    assert head == "abc123deadbeef"
+    assert len(calls) == 2
+    # 第二次必须是直连（显式清空代理）
+    assert calls[1][1] == "-c" and calls[1][2] == "http.proxy="
+
+
+def test_git_proxy_env_override(monkeypatch):
+    """CODETRACE_GIT_PROXY 显式代理优先生效。"""
+    monkeypatch.setenv("CODETRACE_GIT_PROXY", "http://127.0.0.1:7897")
+    args = git_service._git_net_args(["ls-remote", "https://github.com/o/r.git", "HEAD"])
+    assert args[0] == "git"
+    assert args[1] == "-c" and args[2] == "http.proxy=http://127.0.0.1:7897"
+    assert "https.proxy=http://127.0.0.1:7897" in args
+
+
 def test_repo_size_cached(monkeypatch):
     """仓库体积结果缓存：重复查询不重复打 GitHub API。"""
     monkeypatch.setenv("GITHUB_TOKEN", "")
