@@ -110,18 +110,29 @@ def _github_auth_header() -> str | None:
     return "Authorization: Basic " + base64.b64encode(raw.encode("utf-8")).decode("ascii")
 
 
+def _git_auth_env(repo_url: str | None) -> dict[str, str] | None:
+    """
+    GitHub https 仓库带 GITHUB_TOKEN 时的认证配置（环境变量注入，避免出现在进程参数里）。
+    非 GitHub / SSH / 无 token 返回 None。
+    """
+    auth = _github_auth_header()
+    if auth and repo_url and repo_url.startswith("https://") and "github.com" in repo_url:
+        return {
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "http.extraHeader",
+            "GIT_CONFIG_VALUE_0": auth,
+        }
+    return None
+
+
 def _git_net_args(extra_args: list[str], repo_url: str | None = None) -> list[str]:
     """
     git 网络命令参数：CODETRACE_GIT_PROXY 显式代理优先，否则继承用户 git 配置；
-    GitHub https 仓库带 GITHUB_TOKEN 时注入认证头（不写入 URL / 仓库配置，防泄露）。
     """
     proxy = os.getenv("CODETRACE_GIT_PROXY", "").strip()
     args = []
     if proxy:
         args += ["-c", f"http.proxy={proxy}", "-c", f"https.proxy={proxy}"]
-    auth = _github_auth_header()
-    if auth and repo_url and repo_url.startswith("https://") and "github.com" in repo_url:
-        args += ["-c", f"http.extraHeader={auth}"]
     return ["git"] + args + extra_args
 
 
@@ -135,10 +146,13 @@ def _run_git_with_proxy_fallback(
     2. 失败后清空代理直连重试一次（覆盖代理配置错误/代理未运行但可直连的场景）。
     """
     first = _git_net_args(extra_args, repo_url)
+    auth_env = _git_auth_env(repo_url)
+    env = {**os.environ, **auth_env} if auth_env else None
     timed_out = False
     try:
         r = subprocess.run(
-            first, cwd=cwd, capture_output=True, text=True, encoding="utf-8", timeout=timeout,
+            first, cwd=cwd, env=env, capture_output=True, text=True, encoding="utf-8",
+            timeout=timeout,
         )
         if r.returncode == 0:
             return r
@@ -150,12 +164,9 @@ def _run_git_with_proxy_fallback(
         # 首轮已超时且调用方不要求重试（如 ls-remote）：直接抛，避免代理黑洞翻倍延迟
         raise subprocess.TimeoutExpired(first, timeout=timeout)
     direct = ["git", "-c", "http.proxy=", "-c", "https.proxy="] + extra_args
-    auth = _github_auth_header()
-    if auth and repo_url and repo_url.startswith("https://") and "github.com" in repo_url:
-        direct = ["git", "-c", "http.proxy=", "-c", "https.proxy=",
-                  "-c", f"http.extraHeader={auth}"] + extra_args
     r2 = subprocess.run(
-        direct, cwd=cwd, capture_output=True, text=True, encoding="utf-8", timeout=timeout,
+        direct, cwd=cwd, env=env, capture_output=True, text=True, encoding="utf-8",
+        timeout=timeout,
     )
     if r2.returncode != 0:
         raise subprocess.CalledProcessError(

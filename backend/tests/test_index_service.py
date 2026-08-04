@@ -425,30 +425,25 @@ def test_git_proxy_env_override(monkeypatch):
     assert "https.proxy=http://127.0.0.1:7897" in args
 
 
-def test_github_token_auth_header(monkeypatch):
-    """GitHub https + GITHUB_TOKEN → 注入认证头；非 GitHub/SSH/无 token 不加。"""
+def test_github_token_auth_env(monkeypatch):
+    """GitHub https + GITHUB_TOKEN → 认证经环境变量注入；非 GitHub/SSH/无 token 不加。"""
     monkeypatch.setenv("GITHUB_TOKEN", "tok123")
     url = "https://github.com/owner/repo.git"
+    env = git_service._git_auth_env(url)
+    assert env is not None
+    assert env["GIT_CONFIG_COUNT"] == "1"
+    assert env["GIT_CONFIG_KEY_0"] == "http.extraHeader"
+    assert env["GIT_CONFIG_VALUE_0"].startswith("Authorization: Basic ")
+    # 进程参数里不出现认证头
     args = git_service._git_net_args(["ls-remote", url, "HEAD"], repo_url=url)
-    headers = [a for a in args if a.startswith("http.extraHeader=")]
-    assert len(headers) == 1
-    assert headers[0].startswith("http.extraHeader=Authorization: Basic ")
+    assert not any("extraHeader" in a for a in args)
     # 非 GitHub 平台不加
-    args2 = git_service._git_net_args(
-        ["ls-remote", "https://gitlab.com/o/r.git", "HEAD"],
-        repo_url="https://gitlab.com/o/r.git",
-    )
-    assert not any("extraHeader" in a for a in args2)
+    assert git_service._git_auth_env("https://gitlab.com/o/r.git") is None
     # SSH 形式不加
-    args3 = git_service._git_net_args(
-        ["ls-remote", "git@github.com:o/r.git", "HEAD"],
-        repo_url="git@github.com:o/r.git",
-    )
-    assert not any("extraHeader" in a for a in args3)
+    assert git_service._git_auth_env("git@github.com:o/r.git") is None
     # 无 token 不加
     monkeypatch.delenv("GITHUB_TOKEN")
-    args4 = git_service._git_net_args(["ls-remote", url, "HEAD"], repo_url=url)
-    assert not any("extraHeader" in a for a in args4)
+    assert git_service._git_auth_env(url) is None
 
 
 def test_repo_size_cached(monkeypatch):
