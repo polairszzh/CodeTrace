@@ -45,14 +45,14 @@ export default function InlineAgent({ context, onClose }) {
     if (mountedRef.current) setTyping(false)
   }
 
-  // 流结束：按快速节奏打完剩余字符再回调落盘，避免动画被截断
-  const finishTypewriter = (onDone) => {
+  // 流结束：按快速节奏打完剩余字符（视觉层）。答案已由调用方先行落盘，
+  // 动画被打断也不丢内容
+  const finishTypewriter = () => {
     if (!mountedRef.current) return
     const total = pendingRef.current.length
     const remaining = total - shownRef.current
     if (remaining <= 0) {
       stopTypewriter()
-      onDone?.()
       return
     }
     if (timerRef.current) {
@@ -66,7 +66,6 @@ export default function InlineAgent({ context, onClose }) {
         clearInterval(timerRef.current)
         timerRef.current = null
         stopTypewriter()
-        onDone?.()
         return
       }
       let steps = 0
@@ -190,9 +189,9 @@ export default function InlineAgent({ context, onClose }) {
 
       // 最终写入完整内容
       if (mountedRef.current && requestIdRef.current === requestId) {
-        finishTypewriter(() => {
-          setHistory(p => p.map(item => item.id === entryId ? { ...item, a: accumulated } : item))
-        })
+        // 先落盘完整答案（打字机仅视觉层，被打断也不丢）
+        setHistory(p => p.map(item => item.id === entryId ? { ...item, a: accumulated } : item))
+        finishTypewriter()
       }
     } catch (e) {
       // 仅当前请求可停表：被 abort 的旧请求不得误清新请求的定时器
