@@ -92,6 +92,7 @@ def _remote_head(repo_url: str) -> str | None:
     try:
         result = _run_git_with_proxy_fallback(
             ["ls-remote", repo_url, "HEAD"], timeout=8, retry_on_timeout=False,
+            repo_url=repo_url,
         )
         return result.stdout.split()[0] if result.stdout.strip() else None
     except Exception as e:
@@ -99,23 +100,41 @@ def _remote_head(repo_url: str) -> str | None:
         return None
 
 
-def _git_net_args(extra_args: list[str]) -> list[str]:
-    """git 网络命令参数：CODETRACE_GIT_PROXY 显式代理优先，否则继承用户 git 配置。"""
+def _github_auth_header() -> str | None:
+    """GitHub Token 转 Basic 认证头（x-access-token），用于私有仓库 clone/pull。"""
+    token = os.getenv("GITHUB_TOKEN", "").strip()
+    if not token:
+        return None
+    import base64
+    raw = f"x-access-token:{token}"
+    return "Authorization: Basic " + base64.b64encode(raw.encode("utf-8")).decode("ascii")
+
+
+def _git_net_args(extra_args: list[str], repo_url: str | None = None) -> list[str]:
+    """
+    git 网络命令参数：CODETRACE_GIT_PROXY 显式代理优先，否则继承用户 git 配置；
+    GitHub https 仓库带 GITHUB_TOKEN 时注入认证头（不写入 URL / 仓库配置，防泄露）。
+    """
     proxy = os.getenv("CODETRACE_GIT_PROXY", "").strip()
+    args = []
     if proxy:
-        return ["git", "-c", f"http.proxy={proxy}", "-c", f"https.proxy={proxy}"] + extra_args
-    return ["git"] + extra_args
+        args += ["-c", f"http.proxy={proxy}", "-c", f"https.proxy={proxy}"]
+    auth = _github_auth_header()
+    if auth and repo_url and repo_url.startswith("https://") and "github.com" in repo_url:
+        args += ["-c", f"http.extraHeader={auth}"]
+    return ["git"] + args + extra_args
 
 
 def _run_git_with_proxy_fallback(
-    extra_args: list[str], cwd=None, timeout: int = 120, retry_on_timeout: bool = True
+    extra_args: list[str], cwd=None, timeout: int = 120, retry_on_timeout: bool = True,
+    repo_url: str | None = None,
 ) -> subprocess.CompletedProcess:
     """
     运行 git 网络命令（兼容不同用户的代理环境）：
     1. 先按配置执行（显式代理或用户 git 配置中的代理）；
     2. 失败后清空代理直连重试一次（覆盖代理配置错误/代理未运行但可直连的场景）。
     """
-    first = _git_net_args(extra_args)
+    first = _git_net_args(extra_args, repo_url)
     timed_out = False
     try:
         r = subprocess.run(
@@ -131,6 +150,10 @@ def _run_git_with_proxy_fallback(
         # 首轮已超时且调用方不要求重试（如 ls-remote）：直接抛，避免代理黑洞翻倍延迟
         raise subprocess.TimeoutExpired(first, timeout=timeout)
     direct = ["git", "-c", "http.proxy=", "-c", "https.proxy="] + extra_args
+    auth = _github_auth_header()
+    if auth and repo_url and repo_url.startswith("https://") and "github.com" in repo_url:
+        direct = ["git", "-c", "http.proxy=", "-c", "https.proxy=",
+                  "-c", f"http.extraHeader={auth}"] + extra_args
     r2 = subprocess.run(
         direct, cwd=cwd, capture_output=True, text=True, encoding="utf-8", timeout=timeout,
     )
@@ -331,7 +354,7 @@ def clone_or_pull_repo(repo_url: str) -> Path:
                 clone_args += [repo_url, str(repo_path)]
                 try:
                     _run_git_with_proxy_fallback(
-                        clone_args, timeout=600 if full_clone else 120,
+                        clone_args, timeout=600 if full_clone else 120, repo_url=repo_url,
                     )
                 except subprocess.TimeoutExpired:
                     # 超时：清掉半成品，降级浅克隆
@@ -340,7 +363,7 @@ def clone_or_pull_repo(repo_url: str) -> Path:
                         shutil.rmtree(repo_path, ignore_errors=True)
                     _run_git_with_proxy_fallback(
                         ["clone", "--depth=500", repo_url, str(repo_path)],
-                        timeout=600,
+                        timeout=600, repo_url=repo_url,
                     )
         finally:
             if locked:
@@ -378,7 +401,7 @@ def clone_or_pull_repo(repo_url: str) -> Path:
         if _is_shallow_repo(repo_path):
             pull_args.append("--depth=500")
         _run_git_with_proxy_fallback(
-            pull_args, cwd=repo_path, timeout=300,
+            pull_args, cwd=repo_path, timeout=300, repo_url=repo_url,
         )
         invalidate_git_graph_cache(repo_path)
         tracking_service.request_tracking(repo_path)
