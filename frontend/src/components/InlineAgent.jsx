@@ -16,6 +16,7 @@ export default function InlineAgent({ context, onClose }) {
   const timerRef = useRef(null)
   const controllerRef = useRef(null)
   const mountedRef = useRef(true)
+  const requestIdRef = useRef(0)
 
   useEffect(() => {
     if (contentRef.current) {
@@ -73,6 +74,8 @@ export default function InlineAgent({ context, onClose }) {
   }
 
   const runAnalysis = async (question) => {
+    // 请求 id：仅当前请求允许回写状态，旧请求（被 abort）的回调全部失效
+    const requestId = ++requestIdRef.current
     // 中止上一个请求，避免旧流内容混入新问题
     controllerRef.current?.abort()
     const controller = new AbortController()
@@ -126,6 +129,7 @@ export default function InlineAgent({ context, onClose }) {
           if (payload === '[DONE]') continue
           try {
             const ev = JSON.parse(payload)
+            if (requestIdRef.current !== requestId) break
             if (ev.type === 'report') {
               pendingRef.current += ev.content
               accumulated += ev.content
@@ -154,7 +158,7 @@ export default function InlineAgent({ context, onClose }) {
 
       // 最终写入完整内容
       flushTypewriter()
-      if (mountedRef.current) {
+      if (mountedRef.current && requestIdRef.current === requestId) {
         setHistory(p => {
           const h = [...p]
           const last = { ...h[h.length - 1] }
@@ -166,7 +170,7 @@ export default function InlineAgent({ context, onClose }) {
     } catch (e) {
       stopTypewriter()
       // 出错/中断（如中途追问）时把已接收内容写入历史，避免内容丢失与假 loading
-      if (mountedRef.current && accumulated) {
+      if (mountedRef.current && requestIdRef.current === requestId && accumulated) {
         setHistory(p => {
           const h = [...p]
           const last = { ...h[h.length - 1] }
@@ -175,9 +179,11 @@ export default function InlineAgent({ context, onClose }) {
           return h
         })
       }
-      if (e.name !== 'AbortError' && mountedRef.current) setError(e.message)
+      if (e.name !== 'AbortError' && mountedRef.current && requestIdRef.current === requestId) {
+        setError(e.message)
+      }
     } finally {
-      if (mountedRef.current) {
+      if (mountedRef.current && requestIdRef.current === requestId) {
         if (firstChunk) setInitialLoading(false)
       }
     }
