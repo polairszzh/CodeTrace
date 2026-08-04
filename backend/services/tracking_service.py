@@ -182,12 +182,26 @@ def _unquote_git_path(path: str) -> str:
     body = path[1:-1]
     out = []
     i = 0
-    escapes = {'"': '"', '\\': '\\', 't': '\t', 'n': '\n', 'r': '\r'}
+    escapes = {
+        '"': '"', '\\': '\\', 'a': '\a', 'b': '\b', 't': '\t',
+        'n': '\n', 'v': '\v', 'f': '\f', 'r': '\r',
+    }
     while i < len(body):
         ch = body[i]
         if ch == '\\' and i + 1 < len(body):
-            out.append(escapes.get(body[i + 1], body[i + 1]))
-            i += 2
+            nxt = body[i + 1]
+            if nxt in escapes:
+                out.append(escapes[nxt])
+                i += 2
+            elif nxt in "01234567":
+                j = i + 1
+                while j < len(body) and j < i + 4 and body[j] in "01234567":
+                    j += 1
+                out.append(chr(int(body[i + 1:j], 8)))
+                i = j
+            else:
+                out.append(nxt)
+                i += 2
         else:
             out.append(ch)
             i += 1
@@ -249,6 +263,19 @@ def _compute_delta(repo_path: Path, old_snapshot: Optional[dict], head: str) -> 
         },
         "current_totals": new_totals,
     }
+
+
+def _commit_exists(repo_path: Path, commit_hash: Optional[str]) -> bool:
+    if not commit_hash:
+        return False
+    try:
+        result = subprocess.run(
+            ["git", "cat-file", "-e", f"{commit_hash}^{{commit}}"],
+            cwd=repo_path, capture_output=True, timeout=10,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
 
 
 _TRACKING_PROMPT = """你是代码仓库的持续追踪分析助手。以下是仓库自上次快照以来的增量数据（JSON）。请用中文输出一份增量洞察报告（Markdown），结构：
@@ -339,6 +366,14 @@ def refresh_tracking(repo_path, llm=None) -> dict:
         delta = _compute_delta(repo_path, old, head)
         if delta.get("error"):
             logger.warning("追踪增量计算失败 %s: %s", repo_path, delta["error"])
+            if old and not _commit_exists(repo_path, old.get("head")):
+                # force-push/GC 后旧 head 永久失效 → 重建基线自愈
+                logger.warning("旧快照 head 已失效，重建基线 %s", repo_path)
+                data["snapshots"] = []
+                data["latest_report"] = None
+                data.pop("refresh_error", None)
+                _save(repo_path, data)
+                return refresh_tracking(repo_path, llm)
             data["refresh_error"] = {"at": _now(), "message": str(delta.get("error"))}
             _save(repo_path, data)
             return data  # 区间不可读时跳过本次刷新，不生成误导报告
@@ -432,3 +467,15 @@ def in_backoff(repo_path) -> bool:
         return bool(err and _within_backoff(err.get("at")))
     except Exception:
         return False
+
+
+def refresh_error_remaining(repo_path) -> int:
+    """刷新失败剩余的退避秒数（用于前端调度自动重试）。"""
+    try:
+        err = _load(repo_path).get("refresh_error")
+        if not err:
+            return 0
+        ts = datetime.fromisoformat(err.get("at") or "").timestamp()
+        return max(0, int(_REFRESH_ERROR_BACKOFF - (time.time() - ts)))
+    except Exception:
+        return 0

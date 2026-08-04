@@ -202,6 +202,9 @@ def test_unquote_git_path():
     assert tracking_service._unquote_git_path('"a\\\\b.txt"') == 'a\\b.txt'
     assert tracking_service._unquote_git_path("my file.py") == "my file.py"
     assert tracking_service._unquote_git_path('"my file.py"') == "my file.py"
+    assert tracking_service._unquote_git_path('"a\\tb\\n.txt"') == "a\tb\n.txt"
+    assert tracking_service._unquote_git_path('"a\\141.txt"') == "aa.txt"  # 八进制 141 = 'a'
+    assert tracking_service._unquote_git_path('"\\b\\f"') == "\b\f"
 
 
 def test_git_exception_returns_none(tmp_path, monkeypatch):
@@ -215,6 +218,37 @@ def test_git_exception_returns_none(tmp_path, monkeypatch):
     monkeypatch.setattr(tracking_service.subprocess, "run", boom)
     assert tracking_service._new_commits(repo, "abc123") is None
     assert tracking_service._range_churn(repo, "abc123") is None
+
+
+def test_rebuild_baseline_on_stale_head(tmp_path, monkeypatch):
+    """旧快照 head 失效（force-push/GC）时重建基线自愈。"""
+    monkeypatch.setenv("CODETRACE_INDEX_DIR", str(tmp_path / "index"))
+    tracking_service._TRACKING_THREADS.clear()
+    repo = _make_repo(tmp_path, [("feat: init (#1)", 5)])
+    tracking_service.refresh_tracking(repo, llm=FakeLLM())
+
+    (repo / "f0.py").write_text("# changed\n", encoding="utf-8")
+    _commit(repo, "feat: next (#2)", _date(1))
+    monkeypatch.setattr(tracking_service, "_new_commits", lambda *a, **kw: None)
+    monkeypatch.setattr(tracking_service, "_range_churn", lambda *a, **kw: None)
+    monkeypatch.setattr(tracking_service, "_commit_exists", lambda *a, **kw: False)
+
+    data = tracking_service.refresh_tracking(repo, llm=FakeLLM())
+    assert len(data["snapshots"]) == 1  # 重建后的新基线
+    assert data["latest_report"]["generated_by"] == "baseline"
+    assert data.get("refresh_error") is None
+
+
+def test_refresh_error_remaining(tmp_path, monkeypatch):
+    """退避剩余秒数计算（前端自动重试用）。"""
+    monkeypatch.setenv("CODETRACE_INDEX_DIR", str(tmp_path / "index"))
+    repo = _make_repo(tmp_path, [("feat: init (#1)", 5)])
+    store = tracking_service._load(repo)
+    store["refresh_error"] = {"at": tracking_service._now(), "message": "x"}
+    tracking_service._save(repo, store)
+    remaining = tracking_service.refresh_error_remaining(repo)
+    assert 290 <= remaining <= 300
+    assert tracking_service.refresh_error_remaining(tmp_path / "other") == 0
 
 
 def test_empty_repo_no_crash(tmp_path, monkeypatch):

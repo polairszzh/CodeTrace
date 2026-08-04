@@ -34,6 +34,9 @@ function TrackingCard({ repoUrl }) {
         // 后台仍在生成 → 自调度下一次轮询（不依赖 effect 依赖值，避免只触发一次）
         if (d.status === 'refreshing') {
           timerRef.current = setTimeout(() => load(false), 3000)
+        } else if (d.status === 'error' && d.retry_after > 0) {
+          // 退避中：按后端给出的剩余秒数调度一次自动重试
+          timerRef.current = setTimeout(() => load(false), Math.min(d.retry_after, 300) * 1000)
         }
       })
       .catch(e => {

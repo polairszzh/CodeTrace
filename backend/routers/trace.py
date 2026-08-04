@@ -501,6 +501,7 @@ async def repo_tracking(repo_url: str):
         if data.get("refresh_error") and tracking_service.in_backoff(repo_path):
             data["status"] = "error"
             data["message"] = "增量计算暂不可用（稍后自动重试）：" + str(data["refresh_error"].get("message", "未知原因"))
+            data["retry_after"] = tracking_service.refresh_error_remaining(repo_path)
         else:
             tracking_service.request_tracking(repo_path)
             data["status"] = "refreshing"
