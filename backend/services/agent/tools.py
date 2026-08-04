@@ -42,10 +42,10 @@ registry.register(Tool(
         },
         "required": ["repo_url", "commit_message"],
     },
-    execute=lambda repo_url, commit_message: github.get_pr_info(
-        _extract_repo_full(repo_url),
-        github.extract_pr_number(commit_message),
-    ) if github.extract_pr_number(commit_message) else None,
+    execute=lambda repo_url, commit_message: (
+        github.get_pr_info(_extract_repo_full(repo_url), n)
+        if (n := github.extract_pr_number(commit_message)) else None
+    ),
 ))
 
 registry.register(Tool(
