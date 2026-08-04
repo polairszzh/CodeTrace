@@ -1,24 +1,26 @@
 import os
 
 from services.agent.tool_registry import Tool, ToolRegistry
+from services.ast_service import (
+    extract_functions,
+    get_language_for_file,
+    trace_function_across_commits,
+)
 from services.git_service import (
     clone_or_pull_repo,
+    get_co_change_trends,
+    get_file_bulk_summary,
+    get_file_change_context,
     get_file_commits,
     get_file_content_at_commit,
-    get_commit_diff_stats,
-    get_top_changed_files,
-    get_repo_health_stats,
-    get_file_bulk_summary,
     get_file_health_stats,
     get_recent_commit_groups,
-    get_co_change_trends,
-    get_file_change_context,
+    get_repo_health_stats,
+    get_top_changed_files,
     repo_full_from_url,
 )
-from services.ast_service import trace_function_across_commits, extract_functions, get_language_for_file
 from services.github_service import GitHubClient
 from services.llm_service import LLMService
-
 
 github = GitHubClient(token=os.getenv("GITHUB_TOKEN", ""))
 
@@ -41,11 +43,9 @@ registry.register(Tool(
         "required": ["repo_url", "commit_message"],
     },
     execute=lambda repo_url, commit_message: (
-        pr := github.get_pr_info(
-            _extract_repo_full(repo_url),
-            github.extract_pr_number(commit_message)
-        )
-    ) if github.extract_pr_number(commit_message) else None,
+        github.get_pr_info(_extract_repo_full(repo_url), n)
+        if (n := github.extract_pr_number(commit_message)) else None
+    ),
 ))
 
 registry.register(Tool(

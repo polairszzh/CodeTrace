@@ -818,8 +818,8 @@ def get_co_change_trends(repo_path: Path, window_days: int = 30) -> list[dict]:
 
 
 def get_co_change_edges(repo_path: Path, window_days: int = 30) -> dict:
-    from collections import Counter, defaultdict
     import datetime
+    from collections import Counter, defaultdict
 
     now = datetime.datetime.now()
     since_r = (now - datetime.timedelta(days=window_days)).strftime("%Y-%m-%d")

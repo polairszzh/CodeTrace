@@ -1,24 +1,42 @@
-import json
-import os
 import asyncio
-import time
+import json
 import logging
+import os
+import time
 from typing import Optional
+
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from models.schemas import TraceRequest, TraceResponse, TimelineNode, DiffStats
-from services.git_service import clone_or_pull_repo, repo_path_for_url, repo_full_from_url, get_file_commits, get_commit_diff_stats, list_files_at_commit, get_file_content_at_commit, get_file_commit_counts, get_repo_summary, get_git_graph
-from services.github_service import GitHubClient
-from services.llm_service import LLMService
-from services.ast_service import trace_function_across_commits, trace_class_across_commits, extract_symbols_fast
-from services.index_service import get_symbols as index_get_symbols, index_fresh, get_index_status
+
+from models.schemas import DiffStats, TimelineNode, TraceRequest, TraceResponse
 from services import tracking_service
 from services.agent import registry
-from services.agent.planner import AgentPlanner
-from services.agent.graph import run_agent, run_agent_stream
 from services.agent.ask_tools import ask_registry
+from services.agent.graph import run_agent, run_agent_stream
+from services.agent.planner import AgentPlanner
+from services.ast_service import (
+    extract_symbols_fast,
+    trace_class_across_commits,
+    trace_function_across_commits,
+)
 from services.coupling_runner import run_coupling_analysis
+from services.git_service import (
+    clone_or_pull_repo,
+    get_commit_diff_stats,
+    get_file_commit_counts,
+    get_file_commits,
+    get_file_content_at_commit,
+    get_git_graph,
+    get_repo_summary,
+    list_files_at_commit,
+    repo_full_from_url,
+    repo_path_for_url,
+)
+from services.github_service import GitHubClient
+from services.index_service import get_index_status, index_fresh
+from services.index_service import get_symbols as index_get_symbols
+from services.llm_service import LLMService
 
 router = APIRouter()
 

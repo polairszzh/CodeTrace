@@ -1,12 +1,16 @@
 """测试跨文件函数搜索和 LLM 语义匹配功能。"""
 
+from services.ast_service import (
+    extract_functions,
+    get_language_for_file,
+    search_function_across_files,
+)
 from services.git_service import (
     clone_or_pull_repo,
+    get_file_commits,
     list_files_at_commit,
     list_files_changed_in_commit,
-    get_file_commits,
 )
-from services.ast_service import search_function_across_files, extract_functions, get_language_for_file
 from services.llm_service import LLMService
 
 REPO_URL = "https://github.com/polairszzh/CodeTrace.git"

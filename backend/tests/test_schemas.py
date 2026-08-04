@@ -1,4 +1,4 @@
-from models.schemas import TraceRequest, DiffStats, TimelineNode, TraceResponse
+from models.schemas import DiffStats, TimelineNode, TraceRequest, TraceResponse
 
 
 def test_trace_request_model():

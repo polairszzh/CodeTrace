@@ -4,7 +4,6 @@ import datetime
 import os
 import subprocess
 import time
-from pathlib import Path
 
 import pytest
 
@@ -538,6 +537,7 @@ def test_index_status_sse_endpoint(local_repo, monkeypatch):
     """SSE 进度端点：能流式返回索引构建状态直到完成。"""
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
+
     from routers.trace import router
 
     # 让 URL → 路径推导指向本地测试仓库
@@ -584,6 +584,7 @@ def test_index_status_sse_not_cloned(tmp_path, monkeypatch):
     """仓库尚未克隆：SSE 立即返回 not_found 并结束，不空转等待。"""
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
+
     from routers.trace import router
 
     monkeypatch.setattr(git_service, "CACHE_DIR", tmp_path / "no_such_cache")
@@ -604,6 +605,7 @@ def test_index_status_sse_not_started(local_repo, monkeypatch):
     """仓库存在但索引未启动：SSE 返回 not_started 立即结束，不空转 300s。"""
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
+
     from routers.trace import router
 
     monkeypatch.setattr(git_service, "CACHE_DIR", local_repo.parent)

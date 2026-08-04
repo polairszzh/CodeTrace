@@ -1,10 +1,12 @@
 import os
+
 from dotenv import load_dotenv
 
 load_dotenv()
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
 from routers.trace import router as trace_router
 
 app = FastAPI(title="CodeTrace", version="1.0.0")

@@ -1,14 +1,15 @@
 """轻量 Agent 工具集 — 用于"问 Agent"对话式入口"""
 import os
+
 from services.agent.tool_registry import Tool, ToolRegistry
+from services.ast_service import trace_function_across_commits
 from services.git_service import (
     clone_or_pull_repo,
-    get_file_commits,
     get_commit_diff_content,
+    get_file_commits,
     get_file_content_at_commit,
     repo_full_from_url,
 )
-from services.ast_service import trace_function_across_commits
 from services.github_service import GitHubClient
 
 github = GitHubClient(token=os.getenv("GITHUB_TOKEN", ""))

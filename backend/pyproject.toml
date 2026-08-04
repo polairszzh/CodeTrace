@@ -18,4 +18,18 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+    "ruff>=0.16.1",
 ]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+# 测试文件在 conftest.py 已加载 .env；load_dotenv 置于 import 前为历史写法
+"tests/*" = ["E402"]
+# main.py 需在 import routers 前加载 .env（路由模块级读环境变量），E402 为有意设计
+"main.py" = ["E402"]
