@@ -117,10 +117,11 @@ def _git_auth_env(repo_url: str | None) -> dict[str, str] | None:
     """
     auth = _github_auth_header()
     if auth and _is_github_https(repo_url):
+        base_count = int(os.environ.get("GIT_CONFIG_COUNT", "0") or "0")
         return {
-            "GIT_CONFIG_COUNT": "1",
-            "GIT_CONFIG_KEY_0": "http.extraHeader",
-            "GIT_CONFIG_VALUE_0": auth,
+            "GIT_CONFIG_COUNT": str(base_count + 1),
+            f"GIT_CONFIG_KEY_{base_count}": "http.extraHeader",
+            f"GIT_CONFIG_VALUE_{base_count}": auth,
         }
     return None
 
@@ -133,7 +134,7 @@ def _is_github_https(repo_url: str | None) -> bool:
     return host in ("github.com", "www.github.com")
 
 
-def _git_net_args(extra_args: list[str], repo_url: str | None = None) -> list[str]:
+def _git_net_args(extra_args: list[str]) -> list[str]:
     """
     git 网络命令参数：CODETRACE_GIT_PROXY 显式代理优先，否则继承用户 git 配置；
     """
@@ -153,7 +154,7 @@ def _run_git_with_proxy_fallback(
     1. 先按配置执行（显式代理或用户 git 配置中的代理）；
     2. 失败后清空代理直连重试一次（覆盖代理配置错误/代理未运行但可直连的场景）。
     """
-    first = _git_net_args(extra_args, repo_url)
+    first = _git_net_args(extra_args)
     auth_env = _git_auth_env(repo_url)
     env = {**os.environ, **auth_env} if auth_env else None
     timed_out = False
