@@ -382,7 +382,9 @@ def refresh_tracking(repo_path, llm=None) -> dict:
                 data["snapshots"] = []
                 data["latest_report"] = None
                 data.pop("refresh_error", None)
-                _save(repo_path, data)
+                if not _save(repo_path, data):
+                    logger.warning("重建基线写盘失败，跳过递归 %s", repo_path)
+                    return data
                 return refresh_tracking(repo_path, llm)
             data["refresh_error"] = {"at": _now(), "message": str(delta.get("error"))}
             _save(repo_path, data)

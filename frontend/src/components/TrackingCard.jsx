@@ -26,7 +26,12 @@ function TrackingCard({ repoUrl }) {
     if (showLoading) setLoading(true)
     setError('')
     fetch(`/api/repo/tracking?repo_url=${encodeURIComponent(url)}`, { signal: controller.signal })
-      .then(r => r.ok ? r.json() : r.json().then(d => Promise.reject(new Error(d?.detail || `请求失败 (HTTP ${r.status})`))))
+      .then(r => r.text().then(t => {
+        let d = null
+        try { d = JSON.parse(t) } catch { d = null }  // 网关 HTML 错误页也能给出可读提示
+        if (!r.ok) throw new Error(d?.detail || `请求失败 (HTTP ${r.status})`)
+        return d
+      }))
       .then(d => {
         if (repoRef.current !== url) return
         setData(d)
@@ -67,6 +72,9 @@ function TrackingCard({ repoUrl }) {
         <h3 className="text-sm font-semibold m-0 flex-1" style={{ color: 'var(--color-text-heading)' }}>
           持续追踪
         </h3>
+        {loading && data && (
+          <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>刷新中…</span>
+        )}
         {data?.status === 'refreshing' && (
           <span className="text-xs flex items-center gap-1" style={{ color: 'var(--color-text-muted)' }}>
             <span className="w-3 h-3 border-2 rounded-full inline-block animate-spin"
@@ -91,7 +99,7 @@ function TrackingCard({ repoUrl }) {
         </div>
       )}
 
-      {data && !loading && (
+      {data && (
         <>
           <div className="text-xs flex flex-wrap gap-x-4 gap-y-1" style={{ color: 'var(--color-text-muted)' }}>
             {snapshot && (
