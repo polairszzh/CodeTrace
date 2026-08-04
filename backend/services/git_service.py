@@ -868,7 +868,7 @@ def get_file_health_stats(repo_path: Path, top_n: int = 20) -> list[dict]:
         for filepath, fd in file_data.items()
     ]
     recency_map = {
-        filepath: metrics.recency_score_for_dates(fd["dates"])
+        filepath: metrics.recency_score_for_dates(fd.get("dates", []))
         for filepath, fd in file_data.items()
     }
     return metrics.assemble_health_stats(
