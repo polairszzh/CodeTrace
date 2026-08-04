@@ -371,6 +371,7 @@ def test_legacy_cache_migration(tmp_path, monkeypatch):
 def test_remote_head_proxy_fallback(monkeypatch):
     """git 网络命令：配置代理失败后自动清空代理直连重试。"""
     monkeypatch.delenv("CODETRACE_GIT_PROXY", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     calls = []
 
     class FakeResult:
@@ -423,6 +424,59 @@ def test_git_proxy_env_override(monkeypatch):
     assert args[0] == "git"
     assert args[1] == "-c" and args[2] == "http.proxy=http://127.0.0.1:7897"
     assert "https.proxy=http://127.0.0.1:7897" in args
+
+
+def test_github_token_auth_env(monkeypatch):
+    """GitHub https + GITHUB_TOKEN → 认证经环境变量注入；非 GitHub/SSH/无 token 不加。"""
+    monkeypatch.setenv("GITHUB_TOKEN", "tok123")
+    monkeypatch.delenv("GIT_CONFIG_COUNT", raising=False)
+    monkeypatch.delenv("GIT_CONFIG_KEY_0", raising=False)
+    monkeypatch.delenv("GIT_CONFIG_VALUE_0", raising=False)
+    url = "https://github.com/owner/repo.git"
+    env = git_service._git_auth_env(url)
+    assert env is not None
+    assert env["GIT_CONFIG_COUNT"] == "2"
+    assert env["GIT_CONFIG_KEY_0"] == "http.https://github.com/.extraHeader"
+    assert env["GIT_CONFIG_KEY_1"] == "http.https://www.github.com/.extraHeader"
+    assert env["GIT_CONFIG_VALUE_0"].startswith("Authorization: Basic ")
+    # 进程参数里不出现认证头
+    args = git_service._git_net_args(["ls-remote", url, "HEAD"])
+    assert not any("extraHeader" in a for a in args)
+    # 非 GitHub 平台 / 恶意相似主机不加（防 token 泄露）
+    assert git_service._git_auth_env("https://github.com.evil.com/o/r.git") is None
+    assert git_service._git_auth_env("https://github.com@evil.com/o/r.git") is None
+    assert git_service._git_auth_env("https://gitlab.com/github.com/o/r.git") is None
+    assert git_service._git_auth_env("https://gitlab.com/o/r.git") is None
+    # SSH 形式不加
+    assert git_service._git_auth_env("git@github.com:o/r.git") is None
+    # 官方主机注入
+    assert git_service._git_auth_env("https://www.github.com/o/r.git") is not None
+    # 无 token 不加
+    monkeypatch.delenv("GITHUB_TOKEN")
+    assert git_service._git_auth_env(url) is None
+
+
+def test_git_auth_env_preserves_existing_config(monkeypatch):
+    """已有 GIT_CONFIG_* 环境变量时保留并拼接（不覆盖）。"""
+    monkeypatch.setenv("GITHUB_TOKEN", "tok123")
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "user.name")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "someone")
+    env = git_service._git_auth_env("https://github.com/o/r.git")
+    assert env["GIT_CONFIG_COUNT"] == "3"
+    assert env["GIT_CONFIG_KEY_1"] == "http.https://github.com/.extraHeader"
+    assert env["GIT_CONFIG_KEY_2"] == "http.https://www.github.com/.extraHeader"
+    assert env["GIT_CONFIG_VALUE_1"].startswith("Authorization: Basic ")
+    assert "GIT_CONFIG_KEY_0" not in env  # 原有键由调用方 {**os.environ, **delta} 保留
+
+
+def test_git_auth_env_invalid_config_count(monkeypatch):
+    """GIT_CONFIG_COUNT 非数字时按 0 处理，不中断。"""
+    monkeypatch.setenv("GITHUB_TOKEN", "tok123")
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "abc")
+    env = git_service._git_auth_env("https://github.com/o/r.git")
+    assert env["GIT_CONFIG_COUNT"] == "2"
+    assert env["GIT_CONFIG_KEY_0"] == "http.https://github.com/.extraHeader"
 
 
 def test_repo_size_cached(monkeypatch):
