@@ -871,10 +871,11 @@ def get_file_health_stats(repo_path: Path, top_n: int = 20) -> list[dict]:
         filepath: metrics.recency_score_for_dates(fd["dates"])
         for filepath, fd in file_data.items()
     }
-    messages_map = {filepath: list(fd["messages"]) for filepath, fd in file_data.items()}
     return metrics.assemble_health_stats(
         rows, recency_map, top_n=top_n,
-        messages_of=lambda f: messages_map.get(f, []),
+        messages_of=lambda files: {
+            f: list(file_data[f]["messages"]) for f in files
+        },
     )
 
 def get_file_bulk_summary(repo_path: Path, file_paths: list[str]) -> list[dict]:

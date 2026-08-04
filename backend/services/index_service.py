@@ -665,16 +665,24 @@ def get_file_health_stats(repo_path: Path, top_n: int = 20) -> list[dict]:
         con.close()
     recency = {r[0]: r[1] for r in recency_rows}
 
-    def _messages(file):
+    def _messages_batch(files):
         con = _connect(_db_path(repo_path))
         try:
+            if not files:
+                return {}
+            placeholders = ",".join("?" * len(files))
             msgs = con.execute(
-                """SELECT c.message FROM file_commits fc
+                f"""SELECT fc.file, c.message FROM file_commits fc
                    JOIN commits c ON fc.commit_hash = c.hash
-                   WHERE fc.file = ? ORDER BY c.date ASC LIMIT 5""",
-                (file,),
+                   WHERE fc.file IN ({placeholders})
+                   ORDER BY c.date ASC""",
+                files,
             ).fetchall()
-            return [m[0] for m in msgs]
+            out = {}
+            for f, m in msgs:
+                if len(out.get(f, [])) < 5:
+                    out.setdefault(f, []).append(m)
+            return out
         finally:
             con.close()
 
@@ -688,7 +696,9 @@ def get_file_health_stats(repo_path: Path, top_n: int = 20) -> list[dict]:
         }
         for f, total, add, dele, authors in rows
     ]
-    return metrics.assemble_health_stats(stat_rows, recency, top_n=top_n, messages_of=_messages)
+    return metrics.assemble_health_stats(
+        stat_rows, recency, top_n=top_n, messages_of=_messages_batch,
+    )
 
 
 def get_recent_commit_groups(repo_path: Path, count: int = 15) -> list[dict]:

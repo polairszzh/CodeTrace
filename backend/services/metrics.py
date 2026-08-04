@@ -173,7 +173,12 @@ def assemble_health_stats(rows, recency_map, top_n: int = 20, messages_of=None) 
         add = r["total_additions"]
         dele = r["total_deletions"]
         authors = r["authors"]
-        authors_list = authors.split(",") if isinstance(authors, str) else list(authors)
+        if isinstance(authors, str):
+            authors_list = authors.split(",")
+        elif authors:
+            authors_list = list(authors)
+        else:
+            authors_list = []
         stats.append({
             "file": r["file"],
             "total_commits": total,
@@ -187,6 +192,7 @@ def assemble_health_stats(rows, recency_map, top_n: int = 20, messages_of=None) 
     stats.sort(key=lambda x: x["churn"] * x["recency_score"], reverse=True)
     top = stats[:top_n]
     if messages_of:
+        msgs_map = messages_of([s["file"] for s in top])
         for s in top:
-            s["commit_messages"] = messages_of(s["file"])
+            s["commit_messages"] = msgs_map.get(s["file"], [])
     return top
