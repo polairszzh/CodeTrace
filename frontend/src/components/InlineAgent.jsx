@@ -45,10 +45,38 @@ export default function InlineAgent({ context, onClose }) {
     if (mountedRef.current) setTyping(false)
   }
 
-  const flushTypewriter = () => {
-    stopTypewriter()
-    shownRef.current = pendingRef.current.length
-    if (mountedRef.current) setVisibleText(pendingRef.current)
+  // 流结束：按快速节奏打完剩余字符再回调落盘，避免动画被截断
+  const finishTypewriter = (onDone) => {
+    if (!mountedRef.current) return
+    const total = pendingRef.current.length
+    const remaining = total - shownRef.current
+    if (remaining <= 0) {
+      stopTypewriter()
+      onDone?.()
+      return
+    }
+    if (timerRef.current) {
+      clearInterval(timerRef.current)
+      timerRef.current = null
+    }
+    timerRef.current = setInterval(() => {
+      if (!mountedRef.current) return
+      const t = pendingRef.current.length
+      if (shownRef.current >= t) {
+        clearInterval(timerRef.current)
+        timerRef.current = null
+        stopTypewriter()
+        onDone?.()
+        return
+      }
+      let steps = 0
+      while (steps < 12 && shownRef.current < t) {
+        const cp = pendingRef.current.codePointAt(shownRef.current)
+        shownRef.current += (cp !== undefined && cp > 0xFFFF) ? 2 : 1
+        steps += 1
+      }
+      setVisibleText(pendingRef.current.slice(0, shownRef.current))
+    }, 8)
   }
 
   const startTypewriter = () => {
@@ -162,8 +190,9 @@ export default function InlineAgent({ context, onClose }) {
 
       // 最终写入完整内容
       if (mountedRef.current && requestIdRef.current === requestId) {
-        flushTypewriter()
-        setHistory(p => p.map(item => item.id === entryId ? { ...item, a: accumulated } : item))
+        finishTypewriter(() => {
+          setHistory(p => p.map(item => item.id === entryId ? { ...item, a: accumulated } : item))
+        })
       }
     } catch (e) {
       // 仅当前请求可停表：被 abort 的旧请求不得误清新请求的定时器
