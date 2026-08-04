@@ -85,7 +85,7 @@ async def repo_symbols(repo_url: str, file_path: str):
     # 索引优先：HEAD 符号直接走 SQLite，异常回退 git 读取
     if await asyncio.to_thread(index_fresh, repo_path):
         try:
-            symbols = index_get_symbols(repo_path, file_path)
+            symbols = await asyncio.to_thread(index_get_symbols, repo_path, file_path)
             if symbols is not None:
                 return symbols
         except Exception:

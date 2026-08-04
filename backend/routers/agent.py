@@ -33,9 +33,12 @@ async def agent_analyze(req: TraceRequest, goal: str = ""):
             yield "data: " + json.dumps({"step": 0, "error": f"仓库操作失败: {str(e)}"}, ensure_ascii=False) + "\n\n"
             yield "data: [DONE]\n\n"
             return
-        steps = planner.run(goal + f'\n仓库地址: {req.repo_url}', max_steps=20)
-        for step in steps:
-            yield f'data: {json.dumps(step, ensure_ascii=False)}\n\n'
+        try:
+            steps = planner.run(goal + f'\n仓库地址: {req.repo_url}', max_steps=20)
+            for step in steps:
+                yield f'data: {json.dumps(step, ensure_ascii=False)}\n\n'
+        except Exception as e:
+            yield "data: " + json.dumps({"step": 0, "error": f"Agent 执行失败: {str(e)}"}, ensure_ascii=False) + "\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
@@ -147,14 +150,17 @@ async def agent_ask(req: AskRequest):
         raise HTTPException(status_code=500, detail=f"仓库操作失败: {str(e)}")
 
     async def event_stream():
-        async for event in run_agent_stream(
-            ask_registry,
-            goal=goal,
-            repo_url=req.repo_url,
-            max_steps=2,
-            system_prompt=ASK_SYSTEM_PROMPT,
-        ):
-            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        try:
+            async for event in run_agent_stream(
+                ask_registry,
+                goal=goal,
+                repo_url=req.repo_url,
+                max_steps=2,
+                system_prompt=ASK_SYSTEM_PROMPT,
+            ):
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': f'Agent 执行失败: {str(e)}'}, ensure_ascii=False)}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
