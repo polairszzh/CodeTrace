@@ -97,6 +97,7 @@ export default function InlineAgent({ context, onClose }) {
     setHistory(p => [...p, { q: question, a: '', id: entryId }])
 
     let accumulated = ''
+    let firstChunk = true
     try {
       const res = await fetch('/api/agent/ask', {
         method: 'POST',
@@ -115,7 +116,6 @@ export default function InlineAgent({ context, onClose }) {
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
-      let firstChunk = true
 
       while (requestIdRef.current === requestId) {
         const { done, value } = await reader.read()
