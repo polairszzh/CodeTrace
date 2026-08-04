@@ -672,16 +672,20 @@ def get_file_health_stats(repo_path: Path, top_n: int = 20) -> list[dict]:
                 return {}
             placeholders = ",".join("?" * len(files))
             msgs = con.execute(
-                f"""SELECT fc.file, c.message FROM file_commits fc
-                   JOIN commits c ON fc.commit_hash = c.hash
-                   WHERE fc.file IN ({placeholders})
-                   ORDER BY c.date ASC""",
+                f"""SELECT file, message FROM (
+                       SELECT fc.file AS file, c.message AS message,
+                              ROW_NUMBER() OVER (
+                                PARTITION BY fc.file ORDER BY c.date ASC
+                              ) AS rn
+                       FROM file_commits fc
+                       JOIN commits c ON fc.commit_hash = c.hash
+                       WHERE fc.file IN ({placeholders})
+                     ) WHERE rn <= 5""",
                 files,
             ).fetchall()
             out = {}
             for f, m in msgs:
-                if len(out.get(f, [])) < 5:
-                    out.setdefault(f, []).append(m)
+                out.setdefault(f, []).append(m)
             return out
         finally:
             con.close()

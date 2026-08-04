@@ -130,7 +130,7 @@ _RECENCY_BUCKETS = ((7, 10), (30, 5), (90, 2), (None, 0.5))
 
 
 def recency_score_for_dates(dates, now: datetime | None = None) -> float:
-    """按提交日期列表计算时效分数（桶阈值与 recency_bucket_sql 共用常量，防漂移）。"""
+    """按提交日期列表计算时效分数（桶阈值由 _RECENCY_BUCKETS 驱动，与 SQL 共用防漂移）。"""
     now = now or datetime.now()
     score = 0.0
     for d in dates:
@@ -140,15 +140,11 @@ def recency_score_for_dates(dates, now: datetime | None = None) -> float:
         except Exception:
             days_ago = None
         if days_ago is None:
-            score += 0.5
-        elif days_ago <= 7:
-            score += 10
-        elif days_ago <= 30:
-            score += 5
-        elif days_ago <= 90:
-            score += 2
-        else:
-            score += 0.5
+            days_ago = float("inf")  # 非法日期 → 落入兜底桶（0.5）
+        for bucket_days, bucket_score in _RECENCY_BUCKETS:
+            if bucket_days is None or days_ago <= bucket_days:
+                score += bucket_score
+                break
     return score
 
 
