@@ -151,8 +151,12 @@ async def repo_dashboard(repo_url: str):
         p80 = values[int(n * 0.8)] if n > 5 else 0
         p50 = values[int(n * 0.5)] if n > 2 else 0
         high = sum(1 for c in counts.values() if c >= p80 and p80 > 0)
-        medium = sum(1 for c in counts.values() if p50 <= c < p80)
-        low = sum(1 for c in counts.values() if c < p50)
+        # 与 /repo/file-risks 同源分级：p80==0（文件数少）时中风险仅按 p50 判定
+        medium = sum(
+            1 for c in counts.values()
+            if c >= p50 and p50 > 0 and not (c >= p80 and p80 > 0)
+        )
+        low = len(counts) - high - medium
         risk_dist = {"high": high, "medium": medium, "low": low}
     except Exception:
         risk_dist = {"high": 0, "medium": 0, "low": 0}
