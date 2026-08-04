@@ -46,14 +46,14 @@ export default function InlineAgent({ context, onClose }) {
   const startTypewriter = () => {
     if (timerRef.current) return
     setTyping(true)
-    // 打字机：每 20ms 显示一个字符
+    // 打字机：每 20ms 显示两个字符；追上已接收内容时保持等待，
+    // 后续 report 块继续追加，流结束才 flush
     timerRef.current = setInterval(() => {
       const total = pendingRef.current.length
       if (shownRef.current >= total) {
-        stopTypewriter()
         return
       }
-      shownRef.current += 1
+      shownRef.current = Math.min(total, shownRef.current + 2)
       setVisibleText(pendingRef.current.slice(0, shownRef.current))
     }, 20)
   }
@@ -107,10 +107,10 @@ export default function InlineAgent({ context, onClose }) {
             if (ev.type === 'report') {
               pendingRef.current += ev.content
               setStreamStatus('')
+              startTypewriter()
               if (firstChunk) {
                 firstChunk = false
                 setInitialLoading(false)
-                startTypewriter()
               }
             } else if (ev.type === 'tool') {
               const TOOL_LABELS = {
