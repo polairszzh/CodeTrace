@@ -26,7 +26,6 @@ async def agent_analyze(req: TraceRequest, goal: str = ""):
     planner = AgentPlanner(registry)
 
     def generate():
-        import json
         yield "data: " + json.dumps({"step": 0, "status": "Agent 正在准备，首次分析需要 clone 仓库..."}, ensure_ascii=False) + "\n\n"
         try:
             clone_or_pull_repo(req.repo_url)
