@@ -212,6 +212,7 @@ def test_unquote_git_path():
 def test_rename_target():
     """重命名路径取新侧：分组与全路径两种形式。"""
     assert tracking_service._rename_target("backend/{a.py => b.py}") == "backend/b.py"
+    assert tracking_service._rename_target("{a => b}/{c => d}.py") == "b/d.py"
     assert tracking_service._rename_target("a.py => b.py") == "b.py"
     assert tracking_service._rename_target("plain.py") == "plain.py"
 
@@ -229,6 +230,14 @@ def test_git_exception_returns_none(tmp_path, monkeypatch):
     assert tracking_service._range_churn(repo, "abc123") is None
 
 
+def test_extract_pr_number_prefers_bracketed():
+    """同时含 (#456) 与 #123 时优先取括号形式。"""
+    assert tracking_service._extract_pr_number("fix #123 (#456)") == 456
+    assert tracking_service._extract_pr_number("Merge pull request #7 from x") == 7
+    assert tracking_service._extract_pr_number("feat: x (#1)") == 1
+    assert tracking_service._extract_pr_number("no pr") is None
+
+
 def test_rebuild_baseline_on_stale_head(tmp_path, monkeypatch):
     """旧快照 head 失效（force-push/GC）时重建基线自愈。"""
     monkeypatch.setenv("CODETRACE_INDEX_DIR", str(tmp_path / "index"))
@@ -240,7 +249,7 @@ def test_rebuild_baseline_on_stale_head(tmp_path, monkeypatch):
     _commit(repo, "feat: next (#2)", _date(1))
     monkeypatch.setattr(tracking_service, "_new_commits", lambda *a, **kw: None)
     monkeypatch.setattr(tracking_service, "_range_churn", lambda *a, **kw: None)
-    monkeypatch.setattr(tracking_service, "_commit_exists", lambda *a, **kw: False)
+    monkeypatch.setattr(tracking_service, "_is_ancestor", lambda *a, **kw: False)
 
     data = tracking_service.refresh_tracking(repo, llm=FakeLLM())
     assert len(data["snapshots"]) == 1  # 重建后的新基线
@@ -259,7 +268,7 @@ def test_rebuild_baseline_save_failure_no_recursion(tmp_path, monkeypatch):
     _commit(repo, "feat: next (#2)", _date(1))
     monkeypatch.setattr(tracking_service, "_new_commits", lambda *a, **kw: None)
     monkeypatch.setattr(tracking_service, "_range_churn", lambda *a, **kw: None)
-    monkeypatch.setattr(tracking_service, "_commit_exists", lambda *a, **kw: False)
+    monkeypatch.setattr(tracking_service, "_is_ancestor", lambda *a, **kw: False)
     monkeypatch.setattr(tracking_service, "_save", lambda *a, **kw: False)
 
     data = tracking_service.refresh_tracking(repo, llm=FakeLLM())

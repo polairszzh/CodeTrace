@@ -23,7 +23,6 @@ from services.index_service import index_dir
 
 logger = logging.getLogger(__name__)
 
-_PR_RE = re.compile(r"\(#(\d+)\)|(?:^|\s)#(\d+)\b")
 _TRACKING_THREADS: dict[str, threading.Thread] = {}
 _TRACKING_THREADS_LOCK = threading.Lock()
 _STORE_LOCK = threading.Lock()
@@ -209,21 +208,25 @@ def _unquote_git_path(path: str) -> str:
 
 
 def _rename_target(path: str) -> str:
-    """重命名路径取新侧：兼容 `{old => new}` 分组形式与 `old => new` 全路径形式。"""
-    m = re.search(r"\{([^{}]*?) => ([^{}]*?)\}", path)
-    if m:
-        return path[:m.start()] + m.group(2) + path[m.end():]
+    """重命名路径取新侧：兼容多个 `{old => new}` 分组与 `old => new` 全路径形式。"""
+    while True:
+        m = re.search(r"\{([^{}]*?) => ([^{}]*?)\}", path)
+        if not m:
+            break
+        path = path[:m.start()] + m.group(2) + path[m.end():]
     if " => " in path:
         return path.split(" => ", 1)[1]
     return path
 
 
 def _extract_pr_number(message: Optional[str]) -> Optional[int]:
-    """提取 PR 编号：兼容 (#123) 与 GitHub「Merge pull request #123」两种形式。"""
-    m = _PR_RE.search(message or "")
-    if not m:
-        return None
-    return int(m.group(1) or m.group(2))
+    """提取 PR 编号：优先括号形式 (#456)，其次 #123 形式。"""
+    text = message or ""
+    m = re.search(r"\(#(\d+)\)", text)
+    if m:
+        return int(m.group(1))
+    m = re.search(r"(?:^|\s)#(\d+)\b", text)
+    return int(m.group(1)) if m else None
 
 
 def _current_totals(repo_path: Path) -> dict:
@@ -256,7 +259,6 @@ def _compute_delta(repo_path: Path, old_snapshot: Optional[dict], head: str) -> 
     continued = [c for c in churn if c["file"] in old_top][:10]
 
     new_totals = _current_totals(repo_path)
-    old_totals = old_snapshot
     return {
         "baseline": False,
         "from_head": old_snapshot.get("head"),
@@ -267,20 +269,21 @@ def _compute_delta(repo_path: Path, old_snapshot: Optional[dict], head: str) -> 
         "new_hot_files": new_hot,
         "continued_hot_files": continued,
         "totals_delta": {
-            "commits": new_totals.get("total_commits", 0) - old_totals.get("total_commits", 0),
-            "files": new_totals.get("total_files", 0) - old_totals.get("total_files", 0),
-            "authors": new_totals.get("total_authors", 0) - old_totals.get("total_authors", 0),
+            "commits": new_totals.get("total_commits", 0) - old_snapshot.get("total_commits", 0),
+            "files": new_totals.get("total_files", 0) - old_snapshot.get("total_files", 0),
+            "authors": new_totals.get("total_authors", 0) - old_snapshot.get("total_authors", 0),
         },
         "current_totals": new_totals,
     }
 
 
-def _commit_exists(repo_path: Path, commit_hash: Optional[str]) -> bool:
-    if not commit_hash:
+def _is_ancestor(repo_path: Path, old_head: Optional[str], head: str) -> bool:
+    """old_head 是否为当前 HEAD 的祖先（force-push 后旧对象可能仍存在但不是祖先）。"""
+    if not old_head:
         return False
     try:
         result = subprocess.run(
-            ["git", "cat-file", "-e", f"{commit_hash}^{{commit}}"],
+            ["git", "merge-base", "--is-ancestor", old_head, head],
             cwd=repo_path, capture_output=True, timeout=10,
         )
         return result.returncode == 0
@@ -376,9 +379,9 @@ def refresh_tracking(repo_path, llm=None) -> dict:
         delta = _compute_delta(repo_path, old, head)
         if delta.get("error"):
             logger.warning("追踪增量计算失败 %s: %s", repo_path, delta["error"])
-            if old and not _commit_exists(repo_path, old.get("head")):
-                # force-push/GC 后旧 head 永久失效 → 重建基线自愈
-                logger.warning("旧快照 head 已失效，重建基线 %s", repo_path)
+            if old and not _is_ancestor(repo_path, old.get("head"), head):
+                # force-push 后旧 head 不再是祖先（对象可能仍存在）→ 重建基线自愈
+                logger.warning("旧快照 head 不再可达，重建基线 %s", repo_path)
                 data["snapshots"] = []
                 data["latest_report"] = None
                 data.pop("refresh_error", None)
@@ -444,8 +447,8 @@ def request_tracking(repo_path) -> bool:
     try:
         repo_path = Path(repo_path)
         name = repo_path.name
+        err = _load(repo_path).get("refresh_error")
         with _TRACKING_THREADS_LOCK:
-            err = _load(repo_path).get("refresh_error")
             if err and _within_backoff(err.get("at")):
                 return False
             existing = _TRACKING_THREADS.get(name)
