@@ -8,7 +8,12 @@ export default function InlineAgent({ context, onClose }) {
   const [followUp, setFollowUp] = useState('')
   const [initialLoading, setInitialLoading] = useState(true)
   const [streamStatus, setStreamStatus] = useState('')
+  const [visibleText, setVisibleText] = useState('')
+  const [typing, setTyping] = useState(false)
   const contentRef = useRef(null)
+  const pendingRef = useRef('')
+  const shownRef = useRef(0)
+  const timerRef = useRef(null)
 
   useEffect(() => {
     if (contentRef.current) {
@@ -16,10 +21,51 @@ export default function InlineAgent({ context, onClose }) {
     }
   })
 
+  // 组件卸载时清理打字机定时器，避免关闭面板后继续 setState
+  useEffect(() => () => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current)
+      timerRef.current = null
+    }
+  }, [])
+
+  const stopTypewriter = () => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current)
+      timerRef.current = null
+    }
+    setTyping(false)
+  }
+
+  const flushTypewriter = () => {
+    stopTypewriter()
+    shownRef.current = pendingRef.current.length
+    setVisibleText(pendingRef.current)
+  }
+
+  const startTypewriter = () => {
+    if (timerRef.current) return
+    setTyping(true)
+    // 打字机：每 20ms 显示一个字符
+    timerRef.current = setInterval(() => {
+      const total = pendingRef.current.length
+      if (shownRef.current >= total) {
+        stopTypewriter()
+        return
+      }
+      shownRef.current += 1
+      setVisibleText(pendingRef.current.slice(0, shownRef.current))
+    }, 20)
+  }
+
   const runAnalysis = async (question) => {
     setError('')
     setInitialLoading(history.length === 0)
     setStreamStatus('')
+    pendingRef.current = ''
+    shownRef.current = 0
+    setVisibleText('')
+    stopTypewriter()
 
     // 添加问题到对话
     setHistory(p => [...p, { q: question, a: '', id: Date.now() }])
@@ -41,7 +87,6 @@ export default function InlineAgent({ context, onClose }) {
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
-      let accumulated = ''
       let firstChunk = true
 
       while (true) {
@@ -60,11 +105,12 @@ export default function InlineAgent({ context, onClose }) {
           try {
             const ev = JSON.parse(payload)
             if (ev.type === 'report') {
-              accumulated += ev.content
+              pendingRef.current += ev.content
               setStreamStatus('')
               if (firstChunk) {
                 firstChunk = false
                 setInitialLoading(false)
+                startTypewriter()
               }
             } else if (ev.type === 'tool') {
               const TOOL_LABELS = {
@@ -81,25 +127,14 @@ export default function InlineAgent({ context, onClose }) {
             }
           } catch { /* skip */ }
         }
-
-        // 逐段更新回答
-        if (accumulated) {
-          setHistory(p => {
-            const h = [...p]
-            const last = { ...h[h.length - 1] }
-            last.a = accumulated
-            h[h.length - 1] = last
-            return h
-          })
-          await new Promise(r => setTimeout(r, 0))
-        }
       }
 
       // 最终写入完整内容
+      flushTypewriter()
       setHistory(p => {
         const h = [...p]
         const last = { ...h[h.length - 1] }
-        last.a = accumulated
+        last.a = pendingRef.current
         h[h.length - 1] = last
         return h
       })
@@ -190,9 +225,10 @@ export default function InlineAgent({ context, onClose }) {
 
           {history.map((item, i) => {
             const isLast = i === history.length - 1
-            const streaming = isLast && item.a === ''
+            const streaming = isLast && typing && !initialLoading
+            const waiting = isLast && item.a === '' && !typing
             // 首次加载时全屏 spinner 覆盖，不显示 inline spinner
-            if (streaming && initialLoading) return null
+            if (isLast && initialLoading) return null
             return (
               <div key={item.id} className="space-y-3">
                 {i > 0 && (
@@ -201,11 +237,16 @@ export default function InlineAgent({ context, onClose }) {
                     <span style={{ color: 'var(--color-accent)' }}>Q:</span> {item.q}
                   </div>
                 )}
-                {streaming ? (
+                {waiting ? (
                   <div className="flex items-center gap-2 text-sm" style={{ color: 'var(--color-text-muted)' }}>
                     <div className="w-4 h-4 border-2 rounded-full animate-spin flex-shrink-0"
                       style={{ borderColor: 'var(--color-border)', borderTopColor: 'var(--color-accent)' }} />
                     {streamStatus || '分析中...'}
+                  </div>
+                ) : streaming ? (
+                  <div className="text-sm leading-relaxed markdown-report">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{visibleText}</ReactMarkdown>
+                    <div className="mt-2 h-4 w-2 animate-pulse" style={{ background: 'var(--color-accent)' }} />
                   </div>
                 ) : item.a ? (
                   <div className="text-sm leading-relaxed markdown-report">
