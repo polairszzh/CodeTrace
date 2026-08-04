@@ -1,33 +1,42 @@
-"""安全配置测试 — CORS 来源限制。"""
+"""安全配置测试 — CORS 配置逻辑与 wiring。"""
+
+import os
 
 
-def test_cors_restricted_origins(monkeypatch):
-    import importlib
+def test_cors_settings_default():
+    """未配置环境变量时默认仅放行本地前端来源，credentials 开启。"""
+    from main import _cors_settings
 
+    origins, creds = _cors_settings("")
+    assert origins == ["http://localhost:5173", "http://127.0.0.1:5173"]
+    assert creds is True
+
+
+def test_cors_settings_wildcard_disables_credentials():
+    """CODETRACE_CORS_ORIGINS=* 时自动关闭 credentials（符合 CORS 规范）。"""
+    from main import _cors_settings
+
+    origins, creds = _cors_settings("*")
+    assert origins == ["*"]
+    assert creds is False
+
+
+def test_cors_settings_custom_origins():
+    """逗号分隔自定义来源。"""
+    from main import _cors_settings
+
+    origins, creds = _cors_settings("http://a.example.com, http://b.example.com")
+    assert origins == ["http://a.example.com", "http://b.example.com"]
+    assert creds is True
+
+
+def test_app_cors_matches_settings():
+    """App 中间件配置与 _cors_settings(当前环境) 一致（不依赖具体环境值）。"""
     import main
 
-    monkeypatch.delenv("CODETRACE_CORS_ORIGINS", raising=False)
-    main = importlib.reload(main)  # 固定环境，避免外部配置影响断言
-    from fastapi.testclient import TestClient
-
-    client = TestClient(main.app)
-    # 放行来源：返回 ACAO 头
-    r = client.get("/api/repo/dashboard", headers={"Origin": "http://localhost:5173"})
-    assert r.headers.get("access-control-allow-origin") == "http://localhost:5173"
-    # 未放行来源：不返回 ACAO 头
-    r2 = client.get("/api/repo/dashboard", headers={"Origin": "https://evil.example.com"})
-    assert r2.headers.get("access-control-allow-origin") is None
-
-
-def test_cors_wildcard_disables_credentials(monkeypatch):
-    """CODETRACE_CORS_ORIGINS=* 时 allow_credentials 自动关闭（符合 CORS 规范）。"""
-    import importlib
-
-    import main
-
-    monkeypatch.setenv("CODETRACE_CORS_ORIGINS", "*")
-    main = importlib.reload(main)
-    middleware = main.app.user_middleware
-    cors = [m for m in middleware if m.cls.__name__ == "CORSMiddleware"][0]
-    assert cors.kwargs["allow_origins"] == ["*"]
-    assert cors.kwargs["allow_credentials"] is False
+    expected_origins, expected_creds = main._cors_settings(
+        os.getenv("CODETRACE_CORS_ORIGINS", "")
+    )
+    cors = [m for m in main.app.user_middleware if m.cls.__name__ == "CORSMiddleware"][0]
+    assert cors.kwargs["allow_origins"] == expected_origins
+    assert cors.kwargs["allow_credentials"] is expected_creds
