@@ -24,12 +24,15 @@ export default function InlineAgent({ context, onClose }) {
   })
 
   // 组件卸载时中止请求并清理定时器，避免关闭面板后继续 setState
-  useEffect(() => () => {
-    mountedRef.current = false
-    controllerRef.current?.abort()
-    if (timerRef.current) {
-      clearInterval(timerRef.current)
-      timerRef.current = null
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      controllerRef.current?.abort()
+      if (timerRef.current) {
+        clearInterval(timerRef.current)
+        timerRef.current = null
+      }
     }
   }, [])
 
@@ -58,7 +61,13 @@ export default function InlineAgent({ context, onClose }) {
       if (shownRef.current >= total) {
         return
       }
-      shownRef.current = Math.min(total, shownRef.current + 2)
+      // 按 Unicode code point 推进，避免 emoji/代理对半个字符闪烁
+      let steps = 0
+      while (steps < 2 && shownRef.current < total) {
+        const cp = pendingRef.current.codePointAt(shownRef.current)
+        shownRef.current += (cp !== undefined && cp > 0xFFFF) ? 2 : 1
+        steps += 1
+      }
       setVisibleText(pendingRef.current.slice(0, shownRef.current))
     }, 20)
   }
@@ -153,6 +162,7 @@ export default function InlineAgent({ context, onClose }) {
         })
       }
     } catch (e) {
+      stopTypewriter()
       if (e.name !== 'AbortError' && mountedRef.current) setError(e.message)
     } finally {
       if (mountedRef.current) {
