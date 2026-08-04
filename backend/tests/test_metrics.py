@@ -1,5 +1,7 @@
 """共享统计计算模块测试。"""
 
+import datetime
+
 from services import metrics
 
 
@@ -35,5 +37,8 @@ def test_recency_bucket_sql_matches_python():
     assert "'-30 days') THEN 5" in sql
     assert "'-90 days') THEN 2" in sql
     assert "ELSE 0.5" in sql
-    assert metrics.recency_score_for_dates(["2099-01-01 00:00:00 +0800"]) == 10.0
+    future = (datetime.datetime.now() + datetime.timedelta(days=1)).strftime(
+        "%Y-%m-%d 12:00:00 +0800"
+    )
+    assert metrics.recency_score_for_dates([future]) == 10.0
     assert metrics.recency_score_for_dates([]) == 0.0

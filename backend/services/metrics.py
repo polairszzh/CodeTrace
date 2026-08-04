@@ -172,7 +172,7 @@ def assemble_health_stats(rows, recency_map, top_n: int = 20, messages_of=None) 
         dele = r["total_deletions"]
         authors = r["authors"]
         if isinstance(authors, str):
-            authors_list = authors.split(",")
+            authors_list = [a for a in authors.split(",") if a]  # 过滤空串，与 None 一致返回 []
         elif authors:
             authors_list = list(authors)
         else:
