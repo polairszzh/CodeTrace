@@ -32,7 +32,7 @@ def test_assemble_health_stats_messages_batch():
 
 def test_recency_bucket_sql_matches_python():
     """SQL 桶阈值与 Python 评分共用常量（7/30/90 → 10/5/2，其余 0.5）。"""
-    sql = metrics._recency_bucket_sql("substr(c.date, 1, 10)")
+    sql = metrics._recency_bucket_sql()
     assert "'-7 days') THEN 10" in sql
     assert "'-30 days') THEN 5" in sql
     assert "'-90 days') THEN 2" in sql

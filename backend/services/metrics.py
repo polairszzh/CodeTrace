@@ -148,11 +148,12 @@ def recency_score_for_dates(dates, now: datetime | None = None) -> float:
     return score
 
 
-def _recency_bucket_sql(date_expr: str) -> str:
+def _recency_bucket_sql() -> str:
     """内部工具：生成与 recency_score_for_dates 同桶阈值的 SQL CASE。
 
-    date_expr 必须为可信常量表达式（仅内部以固定 substr 调用），勿对用户输入拼接。
+    日期表达式硬编码为索引表固定列（substr(c.date, 1, 10)），不接受外部输入，无拼接注入面。
     """
+    date_expr = "substr(c.date, 1, 10)"
     cases = []
     for days, score in _RECENCY_BUCKETS:
         if days is None:
@@ -186,7 +187,7 @@ def assemble_health_stats(rows, recency_map, top_n: int = 20, messages_of=None) 
             "total_additions": add,
             "total_deletions": dele,
             "churn": add + dele,
-            "recency_score": round(recency_map.get(r["file"], 0.5), 1),
+            "recency_score": round(recency_map.get(r["file"], 0.0), 1),
             "commit_messages": [],
             "top_authors": authors_list[:3],
         })

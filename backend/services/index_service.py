@@ -657,7 +657,7 @@ def get_file_health_stats(repo_path: Path, top_n: int = 20) -> list[dict]:
                GROUP BY fc.file"""
         ).fetchall()
         recency_rows = con.execute(
-            f"""SELECT fc.file, {metrics._recency_bucket_sql('substr(c.date, 1, 10)')}
+            f"""SELECT fc.file, {metrics._recency_bucket_sql()}
                 FROM file_commits fc JOIN commits c ON fc.commit_hash = c.hash
                 GROUP BY fc.file"""
         ).fetchall()
