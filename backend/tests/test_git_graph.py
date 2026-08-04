@@ -4,8 +4,8 @@ import datetime
 import os
 import subprocess
 
-from services import git_service
-from services.git_service import get_git_graph
+from services import git_cache
+from services.git_stats import get_git_graph
 
 
 def _date(days_ago: int) -> str:
@@ -117,16 +117,16 @@ def test_git_graph_dag(tmp_path):
 def test_git_graph_cached(tmp_path):
     """git-graph 结果 5 分钟缓存：重复调用不重算，invalidate 后重算。"""
     repo = _make_repo(tmp_path)
-    git_service._GIT_GRAPH_CACHE.clear()
+    git_cache._GIT_GRAPH_CACHE.clear()
     try:
         a = get_git_graph(repo)
         b = get_git_graph(repo)
         assert a is b  # 命中缓存（同一对象）
-        git_service.invalidate_git_graph_cache(repo)
+        git_cache.invalidate_git_graph_cache(repo)
         c = get_git_graph(repo)
         assert c is not a  # 失效后重新计算
     finally:
-        git_service._GIT_GRAPH_CACHE.clear()
+        git_cache._GIT_GRAPH_CACHE.clear()
 
 
 def test_build_file_timeline_degrades_on_errors(tmp_path, monkeypatch):

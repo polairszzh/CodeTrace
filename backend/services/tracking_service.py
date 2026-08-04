@@ -230,7 +230,7 @@ def _extract_pr_number(message: Optional[str]) -> Optional[int]:
 
 
 def _current_totals(repo_path: Path) -> dict:
-    from services.git_service import get_repo_summary  # 延迟导入避免循环依赖
+    from services.git_stats import get_repo_summary  # 延迟导入避免循环依赖
 
     try:
         summary = get_repo_summary(repo_path)
@@ -395,7 +395,7 @@ def refresh_tracking(repo_path, llm=None) -> dict:
         report = _generate_report(delta, llm)
         data.pop("refresh_error", None)
 
-        from services.git_service import get_top_changed_files  # 延迟导入避免循环依赖
+        from services.git_stats import get_top_changed_files  # 延迟导入避免循环依赖
         try:
             top_files = get_top_changed_files(repo_path, 10)
         except Exception as e:

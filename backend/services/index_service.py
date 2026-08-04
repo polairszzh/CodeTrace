@@ -115,7 +115,7 @@ CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
 """
 
 
-# ── 并发锁（mkdir 原子性，与 git_service 同款） ──────────
+# ── 并发锁（mkdir 原子性，与 git_runner 同款） ──────────
 
 
 def _acquire_lock(name: str, timeout: float = 120) -> bool:
@@ -411,7 +411,7 @@ def _refresh_symbols(
     repo_path: Path, con: sqlite3.Connection, files: list[str], report=None
 ):
     """AST 符号全量重提（磁盘读取，快）。"""
-    # 延迟导入，避免与 git_service 形成循环依赖
+    # 延迟导入，避免与 git_stats 形成循环依赖
     from services.ast_service import extract_symbols_fast
 
     con.execute("DELETE FROM symbols")

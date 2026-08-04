@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from services import git_service, index_service
+from services import git_cache, git_runner, git_stats, index_service
 
 
 def _date(days_ago: int) -> str:
@@ -82,7 +82,7 @@ def test_hot_path_uses_index_when_fresh(local_repo, monkeypatch):
         return original(repo, file_path)
 
     monkeypatch.setattr(index_service, "get_file_commits", spy)
-    commits = git_service.get_file_commits(local_repo, "a.py")
+    commits = git_stats.get_file_commits(local_repo, "a.py")
     assert called == ["a.py"]
     assert len(commits) == 2
 
@@ -91,9 +91,9 @@ def test_queries_match_git(local_repo, monkeypatch):
     assert index_service.ensure_indexed(local_repo)
     index_service._FRESH_CACHE.clear()
 
-    # 让 git_service 走 git 路径，与索引路径结果逐一对比（真正的 parity 测试）
+    # 让 git_stats 走 git 路径，与索引路径结果逐一对比（真正的 parity 测试）
     monkeypatch.setattr(index_service, "index_fresh", lambda p: False)
-    git = git_service.get_file_commits(local_repo, "a.py")
+    git = git_stats.get_file_commits(local_repo, "a.py")
     monkeypatch.setattr(index_service, "index_fresh", lambda p: True)
     idx = index_service.get_file_commits(local_repo, "a.py")
     assert [c["hash"] for c in idx] == [c["hash"] for c in git]
@@ -102,7 +102,7 @@ def test_queries_match_git(local_repo, monkeypatch):
     # diff 统计（原 git 版 files_changed 含摘要行，会 +1，这里只对齐行列数）
     head = git[0]["hash"]
     monkeypatch.setattr(index_service, "index_fresh", lambda p: False)
-    sgit = git_service.get_commit_diff_stats(local_repo, head)
+    sgit = git_stats.get_commit_diff_stats(local_repo, head)
     monkeypatch.setattr(index_service, "index_fresh", lambda p: True)
     sidx = index_service.get_commit_diff_stats(local_repo, head)
     assert sidx["additions"] == sgit["additions"]
@@ -112,13 +112,13 @@ def test_queries_match_git(local_repo, monkeypatch):
     # 热门文件 / 提交计数
     monkeypatch.setattr(index_service, "index_fresh", lambda p: False)
     assert set(index_service.get_top_changed_files(local_repo, 10)) == set(
-        git_service.get_top_changed_files(local_repo, 10)
+        git_stats.get_top_changed_files(local_repo, 10)
     )
-    assert index_service.get_file_commit_counts(local_repo) == git_service.get_file_commit_counts(local_repo)
+    assert index_service.get_file_commit_counts(local_repo) == git_stats.get_file_commit_counts(local_repo)
 
     # 仓库概要
     s_idx = index_service.get_repo_summary(local_repo)
-    s_git = git_service.get_repo_summary(local_repo)
+    s_git = git_stats.get_repo_summary(local_repo)
     assert s_idx["total_commits"] == s_git["total_commits"] == 2
     assert s_idx["total_files"] == s_git["total_files"] == 3
     assert s_idx["total_authors"] == s_git["total_authors"]
@@ -127,7 +127,7 @@ def test_queries_match_git(local_repo, monkeypatch):
 
     # 健康度
     monkeypatch.setattr(index_service, "index_fresh", lambda p: False)
-    h_git = {h["file"]: h for h in git_service.get_file_health_stats(local_repo, 10)}
+    h_git = {h["file"]: h for h in git_stats.get_file_health_stats(local_repo, 10)}
     monkeypatch.setattr(index_service, "index_fresh", lambda p: True)
     h_idx = {h["file"]: h for h in index_service.get_file_health_stats(local_repo, 10)}
     assert set(h_idx) == set(h_git)
@@ -142,7 +142,7 @@ def test_queries_match_git(local_repo, monkeypatch):
 
     # 最近 commit 分组
     monkeypatch.setattr(index_service, "index_fresh", lambda p: False)
-    g_git = git_service.get_recent_commit_groups(local_repo, 5)
+    g_git = git_stats.get_recent_commit_groups(local_repo, 5)
     monkeypatch.setattr(index_service, "index_fresh", lambda p: True)
     g_idx = index_service.get_recent_commit_groups(local_repo, 5)
     assert [g["commit_hash"] for g in g_idx] == [g["commit_hash"] for g in g_git]
@@ -155,14 +155,14 @@ def test_queries_match_git(local_repo, monkeypatch):
 
     # co-change 趋势 / 边
     monkeypatch.setattr(index_service, "index_fresh", lambda p: False)
-    t_git = git_service.get_co_change_trends(local_repo, 30)
+    t_git = git_stats.get_co_change_trends(local_repo, 30)
     monkeypatch.setattr(index_service, "index_fresh", lambda p: True)
     t_idx = index_service.get_co_change_trends(local_repo, 30)
     assert {(t["file"], t["recent_partners"], t["old_partners"]) for t in t_idx} == {
         (t["file"], t["recent_partners"], t["old_partners"]) for t in t_git
     }
     monkeypatch.setattr(index_service, "index_fresh", lambda p: False)
-    e_git = git_service.get_co_change_edges(local_repo, 30)
+    e_git = git_stats.get_co_change_edges(local_repo, 30)
     monkeypatch.setattr(index_service, "index_fresh", lambda p: True)
     e_idx = index_service.get_co_change_edges(local_repo, 30)
     assert {n["id"] for n in e_idx["nodes"]} == {n["id"] for n in e_git["nodes"]}
@@ -226,8 +226,8 @@ def test_rename_follow_matches_git(tmp_path, monkeypatch):
     index_service._FRESH_CACHE.clear()
 
     monkeypatch.setattr(index_service, "index_fresh", lambda p: False)
-    git_d = git_service.get_file_commits(repo, "d.py")
-    git_a = git_service.get_file_commits(repo, "a.py")
+    git_d = git_stats.get_file_commits(repo, "d.py")
+    git_a = git_stats.get_file_commits(repo, "a.py")
     monkeypatch.setattr(index_service, "index_fresh", lambda p: True)
 
     idx_d = index_service.get_file_commits(repo, "d.py")
@@ -250,14 +250,14 @@ def test_stale_index_falls_back_to_git(local_repo):
     db = index_service._db_path(local_repo)
     db.unlink()
     assert index_service.index_fresh(local_repo) is False
-    assert len(git_service.get_file_commits(local_repo, "a.py")) == 2
-    assert git_service.get_file_commit_counts(local_repo) == {"a.py": 2, "b.py": 1, "c.py": 1}
+    assert len(git_stats.get_file_commits(local_repo, "a.py")) == 2
+    assert git_stats.get_file_commit_counts(local_repo) == {"a.py": 2, "b.py": 1, "c.py": 1}
 
     # 库损坏 → 同样静默回退
     db.write_bytes(b"not a sqlite database")
     index_service._FRESH_CACHE.clear()
     assert index_service.index_fresh(local_repo) is False
-    summary = git_service.get_repo_summary(local_repo)
+    summary = git_stats.get_repo_summary(local_repo)
     assert summary["total_commits"] == 2
 
 
@@ -290,7 +290,7 @@ def test_request_index_build_background(local_repo):
 def test_should_full_clone_decision(monkeypatch):
     """全量 clone 决策：体积 ≤ 1GB 全量，> 阈值或查不到走浅克隆，阈值可配。"""
     monkeypatch.setenv("GITHUB_TOKEN", "")
-    git_service._SIZE_CACHE.clear()
+    git_runner._SIZE_CACHE.clear()
 
     class FakeResp:
         def __init__(self, size_kb):
@@ -302,51 +302,51 @@ def test_should_full_clone_decision(monkeypatch):
         def json(self):
             return {"size": self._size}
 
-    monkeypatch.setattr(git_service.httpx, "get", lambda url, **kw: FakeResp(100 * 1024))
-    assert git_service._should_full_clone("https://github.com/owner/repo.git") is True
+    monkeypatch.setattr(git_runner.httpx, "get", lambda url, **kw: FakeResp(100 * 1024))
+    assert git_runner._should_full_clone("https://github.com/owner/repo.git") is True
 
-    monkeypatch.setattr(git_service.httpx, "get", lambda url, **kw: FakeResp(2 * 1024 * 1024))
-    git_service._SIZE_CACHE.clear()
-    assert git_service._should_full_clone("https://github.com/owner/repo.git") is False
+    monkeypatch.setattr(git_runner.httpx, "get", lambda url, **kw: FakeResp(2 * 1024 * 1024))
+    git_runner._SIZE_CACHE.clear()
+    assert git_runner._should_full_clone("https://github.com/owner/repo.git") is False
 
     def boom(url, **kw):
         raise RuntimeError("network down")
 
-    monkeypatch.setattr(git_service.httpx, "get", boom)
-    git_service._SIZE_CACHE.clear()
-    assert git_service._should_full_clone("https://github.com/owner/repo.git") is False
+    monkeypatch.setattr(git_runner.httpx, "get", boom)
+    git_runner._SIZE_CACHE.clear()
+    assert git_runner._should_full_clone("https://github.com/owner/repo.git") is False
 
     # 非 GitHub 仓库不查 API，直接浅克隆
-    assert git_service._should_full_clone("https://gitlab.com/owner/repo.git") is False
+    assert git_runner._should_full_clone("https://gitlab.com/owner/repo.git") is False
 
     # 阈值可配置
     monkeypatch.setenv("CODETRACE_CLONE_THRESHOLD_KB", str(50 * 1024))
-    monkeypatch.setattr(git_service.httpx, "get", lambda url, **kw: FakeResp(100 * 1024))
-    git_service._SIZE_CACHE.clear()
-    assert git_service._should_full_clone("https://github.com/owner/repo.git") is False
+    monkeypatch.setattr(git_runner.httpx, "get", lambda url, **kw: FakeResp(100 * 1024))
+    git_runner._SIZE_CACHE.clear()
+    assert git_runner._should_full_clone("https://github.com/owner/repo.git") is False
 
 
 def test_repo_path_sanitized(tmp_path, monkeypatch):
     """URL 清洗：主机+owner 隔离、'..'/'.' 不逃逸缓存目录。"""
-    monkeypatch.setattr(git_service, "CACHE_DIR", tmp_path / "cache")
-    assert git_service.repo_name_for_url("https://github.com/alice/foo.git") == "github.com_alice_foo"
-    assert git_service.repo_name_for_url("https://github.com/bob/foo.git") == "github.com_bob_foo"
-    assert git_service.repo_name_for_url("https://github.com/alice/foo.git") != \
-        git_service.repo_name_for_url("https://github.com/bob/foo.git")
+    monkeypatch.setattr(git_runner, "CACHE_DIR", tmp_path / "cache")
+    assert git_runner.repo_name_for_url("https://github.com/alice/foo.git") == "github.com_alice_foo"
+    assert git_runner.repo_name_for_url("https://github.com/bob/foo.git") == "github.com_bob_foo"
+    assert git_runner.repo_name_for_url("https://github.com/alice/foo.git") != \
+        git_runner.repo_name_for_url("https://github.com/bob/foo.git")
     # SSH 形式 URL 同样得到可读命名
-    assert git_service.repo_name_for_url("git@github.com:alice/foo.git") == "github.com_alice_foo"
+    assert git_runner.repo_name_for_url("git@github.com:alice/foo.git") == "github.com_alice_foo"
     # 目录穿越与空名安全
-    assert "/" not in git_service.repo_name_for_url("https://github.com/o/..")
-    assert git_service.repo_name_for_url("https://github.com/o/..") != ".."
-    p = git_service.repo_path_for_url("https://github.com/o/..")
-    assert p.resolve().is_relative_to(git_service.CACHE_DIR.resolve())
+    assert "/" not in git_runner.repo_name_for_url("https://github.com/o/..")
+    assert git_runner.repo_name_for_url("https://github.com/o/..") != ".."
+    p = git_runner.repo_path_for_url("https://github.com/o/..")
+    assert p.resolve().is_relative_to(git_runner.CACHE_DIR.resolve())
 
 
 def test_legacy_cache_migration(tmp_path, monkeypatch):
     """旧版同名缓存自动迁移到新命名（origin 匹配时）。"""
-    monkeypatch.setattr(git_service, "CACHE_DIR", tmp_path / "cache")
-    monkeypatch.setattr(git_service, "_LOCK_DIR", tmp_path / "cache" / ".locks")
-    legacy = git_service.CACHE_DIR / "foo"
+    monkeypatch.setattr(git_runner, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(git_runner, "_LOCK_DIR", tmp_path / "cache" / ".locks")
+    legacy = git_runner.CACHE_DIR / "foo"
     legacy.mkdir(parents=True)
     subprocess.run(["git", "init", "-b", "main", str(legacy)], check=True, capture_output=True)
     subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=legacy, check=True, capture_output=True)
@@ -360,8 +360,8 @@ def test_legacy_cache_migration(tmp_path, monkeypatch):
     subprocess.run(["git", "commit", "-m", "c1"], cwd=legacy, check=True, capture_output=True)
 
     url = "https://github.com/alice/foo.git"
-    repo_path = git_service.clone_or_pull_repo(url)
-    new_path = git_service.repo_path_for_url(url)
+    repo_path = git_runner.clone_or_pull_repo(url)
+    new_path = git_runner.repo_path_for_url(url)
     assert repo_path == new_path
     assert new_path.exists()
     assert not legacy.exists()
@@ -384,8 +384,8 @@ def test_remote_head_proxy_fallback(monkeypatch):
             raise OSError("connection refused")
         return FakeResult()
 
-    monkeypatch.setattr(git_service.subprocess, "run", fake_run)
-    head = git_service._remote_head("https://github.com/owner/repo.git")
+    monkeypatch.setattr(git_runner.subprocess, "run", fake_run)
+    head = git_runner._remote_head("https://github.com/owner/repo.git")
     assert head == "abc123deadbeef"
     assert len(calls) == 2
     # 第二次必须是直连（显式清空代理）
@@ -401,25 +401,25 @@ def test_remote_head_no_retry_on_timeout(monkeypatch):
         calls.append(cmd)
         raise subprocess.TimeoutExpired(cmd, timeout=8)
 
-    monkeypatch.setattr(git_service.subprocess, "run", fake_run)
-    head = git_service._remote_head("https://github.com/owner/repo.git")
+    monkeypatch.setattr(git_runner.subprocess, "run", fake_run)
+    head = git_runner._remote_head("https://github.com/owner/repo.git")
     assert head is None
     assert len(calls) == 1
 
 
 def test_repo_full_from_url():
     """owner/repo 提取：https 与 SSH 形式通用。"""
-    assert git_service.repo_full_from_url("https://github.com/alice/foo.git") == "alice/foo"
-    assert git_service.repo_full_from_url("git@github.com:alice/foo.git") == "alice/foo"
-    assert git_service.repo_full_from_url("https://github.com/alice/foo") == "alice/foo"
-    assert git_service.repo_full_from_url("https://github.com/") is None
-    assert git_service.repo_full_from_url("") is None
+    assert git_runner.repo_full_from_url("https://github.com/alice/foo.git") == "alice/foo"
+    assert git_runner.repo_full_from_url("git@github.com:alice/foo.git") == "alice/foo"
+    assert git_runner.repo_full_from_url("https://github.com/alice/foo") == "alice/foo"
+    assert git_runner.repo_full_from_url("https://github.com/") is None
+    assert git_runner.repo_full_from_url("") is None
 
 
 def test_git_proxy_env_override(monkeypatch):
     """CODETRACE_GIT_PROXY 显式代理优先生效。"""
     monkeypatch.setenv("CODETRACE_GIT_PROXY", "http://127.0.0.1:7897")
-    args = git_service._git_net_args(["ls-remote", "https://github.com/o/r.git", "HEAD"])
+    args = git_runner._git_net_args(["ls-remote", "https://github.com/o/r.git", "HEAD"])
     assert args[0] == "git"
     assert args[1] == "-c" and args[2] == "http.proxy=http://127.0.0.1:7897"
     assert "https.proxy=http://127.0.0.1:7897" in args
@@ -432,27 +432,27 @@ def test_github_token_auth_env(monkeypatch):
     monkeypatch.delenv("GIT_CONFIG_KEY_0", raising=False)
     monkeypatch.delenv("GIT_CONFIG_VALUE_0", raising=False)
     url = "https://github.com/owner/repo.git"
-    env = git_service._git_auth_env(url)
+    env = git_runner._git_auth_env(url)
     assert env is not None
     assert env["GIT_CONFIG_COUNT"] == "2"
     assert env["GIT_CONFIG_KEY_0"] == "http.https://github.com/.extraHeader"
     assert env["GIT_CONFIG_KEY_1"] == "http.https://www.github.com/.extraHeader"
     assert env["GIT_CONFIG_VALUE_0"].startswith("Authorization: Basic ")
     # 进程参数里不出现认证头
-    args = git_service._git_net_args(["ls-remote", url, "HEAD"])
+    args = git_runner._git_net_args(["ls-remote", url, "HEAD"])
     assert not any("extraHeader" in a for a in args)
     # 非 GitHub 平台 / 恶意相似主机不加（防 token 泄露）
-    assert git_service._git_auth_env("https://github.com.evil.com/o/r.git") is None
-    assert git_service._git_auth_env("https://github.com@evil.com/o/r.git") is None
-    assert git_service._git_auth_env("https://gitlab.com/github.com/o/r.git") is None
-    assert git_service._git_auth_env("https://gitlab.com/o/r.git") is None
+    assert git_runner._git_auth_env("https://github.com.evil.com/o/r.git") is None
+    assert git_runner._git_auth_env("https://github.com@evil.com/o/r.git") is None
+    assert git_runner._git_auth_env("https://gitlab.com/github.com/o/r.git") is None
+    assert git_runner._git_auth_env("https://gitlab.com/o/r.git") is None
     # SSH 形式不加
-    assert git_service._git_auth_env("git@github.com:o/r.git") is None
+    assert git_runner._git_auth_env("git@github.com:o/r.git") is None
     # 官方主机注入
-    assert git_service._git_auth_env("https://www.github.com/o/r.git") is not None
+    assert git_runner._git_auth_env("https://www.github.com/o/r.git") is not None
     # 无 token 不加
     monkeypatch.delenv("GITHUB_TOKEN")
-    assert git_service._git_auth_env(url) is None
+    assert git_runner._git_auth_env(url) is None
 
 
 def test_git_auth_env_preserves_existing_config(monkeypatch):
@@ -461,7 +461,7 @@ def test_git_auth_env_preserves_existing_config(monkeypatch):
     monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
     monkeypatch.setenv("GIT_CONFIG_KEY_0", "user.name")
     monkeypatch.setenv("GIT_CONFIG_VALUE_0", "someone")
-    env = git_service._git_auth_env("https://github.com/o/r.git")
+    env = git_runner._git_auth_env("https://github.com/o/r.git")
     assert env["GIT_CONFIG_COUNT"] == "3"
     assert env["GIT_CONFIG_KEY_1"] == "http.https://github.com/.extraHeader"
     assert env["GIT_CONFIG_KEY_2"] == "http.https://www.github.com/.extraHeader"
@@ -473,7 +473,7 @@ def test_git_auth_env_invalid_config_count(monkeypatch):
     """GIT_CONFIG_COUNT 非数字时按 0 处理，不中断。"""
     monkeypatch.setenv("GITHUB_TOKEN", "tok123")
     monkeypatch.setenv("GIT_CONFIG_COUNT", "abc")
-    env = git_service._git_auth_env("https://github.com/o/r.git")
+    env = git_runner._git_auth_env("https://github.com/o/r.git")
     assert env["GIT_CONFIG_COUNT"] == "2"
     assert env["GIT_CONFIG_KEY_0"] == "http.https://github.com/.extraHeader"
 
@@ -481,7 +481,7 @@ def test_git_auth_env_invalid_config_count(monkeypatch):
 def test_repo_size_cached(monkeypatch):
     """仓库体积结果缓存：重复查询不重复打 GitHub API。"""
     monkeypatch.setenv("GITHUB_TOKEN", "")
-    git_service._SIZE_CACHE.clear()
+    git_runner._SIZE_CACHE.clear()
 
     class FakeResp:
         def raise_for_status(self):
@@ -496,28 +496,28 @@ def test_repo_size_cached(monkeypatch):
         calls.append(url)
         return FakeResp()
 
-    monkeypatch.setattr(git_service.httpx, "get", fake_get)
+    monkeypatch.setattr(git_runner.httpx, "get", fake_get)
     url = "https://github.com/owner/repo.git"
-    assert git_service._repo_size_kb(url) == 123456
-    assert git_service._repo_size_kb(url) == 123456
+    assert git_runner._repo_size_kb(url) == 123456
+    assert git_runner._repo_size_kb(url) == 123456
     assert len(calls) == 1
-    git_service._SIZE_CACHE.clear()
+    git_runner._SIZE_CACHE.clear()
 
 
 def test_repo_size_url_validation(monkeypatch):
     """URL 解析严格：非完整 owner/repo 路径不请求 GitHub API。"""
-    git_service._SIZE_CACHE.clear()
+    git_runner._SIZE_CACHE.clear()
     calls = []
     monkeypatch.setattr(
-        git_service.httpx,
+        git_runner.httpx,
         "get",
         lambda url, **kw: calls.append(url) or (_ for _ in ()).throw(AssertionError("不应请求 API")),
     )
-    assert git_service._repo_size_kb("https://github.com/owner") is None
-    assert git_service._repo_size_kb("https://github.com/") is None
-    assert git_service._repo_size_kb("https://gitlab.com/owner/repo.git") is None
+    assert git_runner._repo_size_kb("https://github.com/owner") is None
+    assert git_runner._repo_size_kb("https://github.com/") is None
+    assert git_runner._repo_size_kb("https://gitlab.com/owner/repo.git") is None
     assert calls == []
-    git_service._SIZE_CACHE.clear()
+    git_runner._SIZE_CACHE.clear()
 
 
 def test_request_background_skips_when_fresh(local_repo, monkeypatch):
@@ -529,7 +529,7 @@ def test_request_background_skips_when_fresh(local_repo, monkeypatch):
     monkeypatch.setattr(
         index_service, "request_index_build", lambda p: calls.append(p) or True
     )
-    git_service._request_index_background(local_repo)
+    git_cache._request_index_background(local_repo)
     assert calls == []
 
 
@@ -541,7 +541,7 @@ def test_index_status_sse_endpoint(local_repo, monkeypatch):
     from routers.trace import router
 
     # 让 URL → 路径推导指向本地测试仓库
-    monkeypatch.setattr(git_service, "CACHE_DIR", local_repo.parent)
+    monkeypatch.setattr(git_runner, "CACHE_DIR", local_repo.parent)
     app = FastAPI()
     app.include_router(router, prefix="/api")
     client = TestClient(app)
@@ -587,7 +587,7 @@ def test_index_status_sse_not_cloned(tmp_path, monkeypatch):
 
     from routers.trace import router
 
-    monkeypatch.setattr(git_service, "CACHE_DIR", tmp_path / "no_such_cache")
+    monkeypatch.setattr(git_runner, "CACHE_DIR", tmp_path / "no_such_cache")
     app = FastAPI()
     app.include_router(router, prefix="/api")
     client = TestClient(app)
@@ -608,9 +608,9 @@ def test_index_status_sse_not_started(local_repo, monkeypatch):
 
     from routers.trace import router
 
-    monkeypatch.setattr(git_service, "CACHE_DIR", local_repo.parent)
+    monkeypatch.setattr(git_runner, "CACHE_DIR", local_repo.parent)
     # 按新命名规则创建仓库目录（URL → host_owner_repo）
-    target = local_repo.parent / git_service.repo_name_for_url("https://github.com/owner/repo.git")
+    target = local_repo.parent / git_runner.repo_name_for_url("https://github.com/owner/repo.git")
     target.mkdir(exist_ok=True)
     subprocess.run(["git", "init", "-b", "main", str(target)], check=True, capture_output=True)
     index_service._FRESH_CACHE.clear()

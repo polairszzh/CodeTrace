@@ -6,8 +6,11 @@ from services.ast_service import (
     get_language_for_file,
     trace_function_across_commits,
 )
-from services.git_service import (
+from services.git_runner import (
     clone_or_pull_repo,
+    repo_full_from_url,
+)
+from services.git_stats import (
     get_co_change_trends,
     get_file_bulk_summary,
     get_file_change_context,
@@ -17,7 +20,6 @@ from services.git_service import (
     get_recent_commit_groups,
     get_repo_health_stats,
     get_top_changed_files,
-    repo_full_from_url,
 )
 from services.github_service import GitHubClient
 from services.llm_service import LLMService

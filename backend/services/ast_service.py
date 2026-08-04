@@ -5,7 +5,7 @@ import tree_sitter_javascript as tsjavascript
 import tree_sitter_python as tspython
 from tree_sitter import Language, Parser
 
-from services.git_service import (
+from services.git_stats import (
     get_file_commits,
     get_file_content_at_commit,
     list_files_at_commit,

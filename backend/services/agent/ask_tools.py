@@ -3,12 +3,14 @@ import os
 
 from services.agent.tool_registry import Tool, ToolRegistry
 from services.ast_service import trace_function_across_commits
-from services.git_service import (
+from services.git_runner import (
     clone_or_pull_repo,
+    repo_full_from_url,
+)
+from services.git_stats import (
     get_commit_diff_content,
     get_file_commits,
     get_file_content_at_commit,
-    repo_full_from_url,
 )
 from services.github_service import GitHubClient
 

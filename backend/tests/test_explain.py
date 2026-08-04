@@ -1,12 +1,13 @@
 """测试变更原因语义理解"""
 
 REPO_URL = "https://github.com/polairszzh/CodeTrace.git"
-KNOWN_FILE = "backend/services/git_service.py"
+KNOWN_FILE = "backend/services/git_stats.py"
 
 
 def test_get_file_change_context_structure():
     """验证变更上下文数据返回正确结构"""
-    from services.git_service import clone_or_pull_repo, get_file_change_context
+    from services.git_runner import clone_or_pull_repo
+    from services.git_stats import get_file_change_context
 
     repo = clone_or_pull_repo(REPO_URL)
     ctx = get_file_change_context(repo, KNOWN_FILE, count=3)
@@ -21,7 +22,8 @@ def test_get_file_change_context_structure():
 
 def test_file_change_context_has_diff():
     """验证每个 commit 包含 diff 摘要"""
-    from services.git_service import clone_or_pull_repo, get_file_change_context
+    from services.git_runner import clone_or_pull_repo
+    from services.git_stats import get_file_change_context
 
     repo = clone_or_pull_repo(REPO_URL)
     ctx = get_file_change_context(repo, KNOWN_FILE, count=3)
