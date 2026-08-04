@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from services import index_service, tracking_service
+from services import index_service, metrics, tracking_service
 
 logger = logging.getLogger(__name__)
 
@@ -799,7 +799,6 @@ def get_file_health_stats(repo_path: Path, top_n: int = 20) -> list[dict]:
         except Exception:
             pass
 
-    import datetime
     from collections import defaultdict
 
     # git log --numstat 输出格式：
@@ -858,43 +857,25 @@ def get_file_health_stats(repo_path: Path, top_n: int = 20) -> list[dict]:
             if current_commit["message"] and len(fd["messages"]) < 5:
                 fd["messages"].append(current_commit["message"])
 
-    now = datetime.datetime.now()
-    stats = []
-    for filepath, fd in file_data.items():
-        if fd["commits"] == 0:
-            continue
-
-        # 时效加权：最近 30 天内的 commit 权重大
-        recency_score = 0
-        for d in fd.get("dates", []):
-            try:
-                dt = datetime.datetime.strptime(d[:10], "%Y-%m-%d")
-                days_ago = (now - dt).days
-                if days_ago <= 7:
-                    recency_score += 10
-                elif days_ago <= 30:
-                    recency_score += 5
-                elif days_ago <= 90:
-                    recency_score += 2
-                else:
-                    recency_score += 0.5
-            except Exception:
-                recency_score += 0.5
-
-        stats.append({
+    rows = [
+        {
             "file": filepath,
             "total_commits": fd["commits"],
             "total_additions": fd["additions"],
             "total_deletions": fd["deletions"],
-            "churn": fd["additions"] + fd["deletions"],
-            "recency_score": round(recency_score, 1),
-            "commit_messages": list(fd["messages"]),
-            "top_authors": list(fd["authors"])[:3],
-        })
-
-    # 按 churn + recency 综合排序
-    stats.sort(key=lambda x: x["churn"] * x["recency_score"], reverse=True)
-    return stats[:top_n]
+            "authors": fd["authors"],
+        }
+        for filepath, fd in file_data.items()
+    ]
+    recency_map = {
+        filepath: metrics.recency_score_for_dates(fd["dates"])
+        for filepath, fd in file_data.items()
+    }
+    messages_map = {filepath: list(fd["messages"]) for filepath, fd in file_data.items()}
+    return metrics.assemble_health_stats(
+        rows, recency_map, top_n=top_n,
+        messages_of=lambda f: messages_map.get(f, []),
+    )
 
 def get_file_bulk_summary(repo_path: Path, file_paths: list[str]) -> list[dict]:
     """
@@ -1018,7 +999,6 @@ def get_co_change_trends(repo_path: Path, window_days: int = 30) -> list[dict]:
             pass
 
     import datetime
-    from collections import Counter, defaultdict
 
     now = datetime.datetime.now()
 
@@ -1046,47 +1026,7 @@ def get_co_change_trends(repo_path: Path, window_days: int = 30) -> list[dict]:
     recent_groups = window_commits(window_days, 0)
     old_groups = window_commits(window_days * 2, window_days)
 
-    def build_metrics(groups):
-        partner_map = defaultdict(set)
-        bx_counter = Counter()
-        for files in groups:
-            flist = list(files)
-            for i, fa in enumerate(flist):
-                for fb in flist[i + 1:]:
-                    partner_map[fa].add(fb)
-                    partner_map[fb].add(fa)
-                    ma = fa.replace("\\", "/").split("/")[0] if "/" in fa or "\\" in fa else ""
-                    mb = fb.replace("\\", "/").split("/")[0] if "/" in fb or "\\" in fb else ""
-                    if ma and mb and ma != mb:
-                        bx_counter[fa] += 1
-                        bx_counter[fb] += 1
-        return {f: {"partners": len(p), "bx": bx_counter.get(f, 0)} for f, p in partner_map.items()}
-
-    recent_m = build_metrics(recent_groups)
-    old_m = build_metrics(old_groups)
-
-    all_files = set(recent_m.keys()) | set(old_m.keys())
-    results = []
-    for f in all_files:
-        rec = recent_m.get(f, {"partners": 0, "bx": 0})
-        old = old_m.get(f, {"partners": 0, "bx": 0})
-        if rec["partners"] == 0 and old["partners"] == 0:
-            continue
-        old_p = old["partners"] or 1
-        growth = round((rec["partners"] - old["partners"]) / old_p, 2)
-        delta = rec["partners"] - old["partners"]
-        rec_p = rec["partners"]
-        results.append({
-            "file": f,
-            "recent_partners": rec["partners"],
-            "old_partners": old["partners"],
-            "coupling_growth": growth,
-            "boundary_crossings": rec["bx"],
-            "risk": _classify_coupling_risk(rec_p, delta),
-        })
-
-    results.sort(key=lambda x: (-x["coupling_growth"], -x["boundary_crossings"]))
-    return results[:30]
+    return metrics.compute_cochange_trends(recent_groups, old_groups)
 
 
 def get_co_change_edges(repo_path: Path, window_days: int = 30) -> dict:
@@ -1109,7 +1049,6 @@ def get_co_change_edges(repo_path: Path, window_days: int = 30) -> dict:
             pass
 
     import datetime
-    from collections import Counter, defaultdict
 
     now = datetime.datetime.now()
 
@@ -1137,77 +1076,7 @@ def get_co_change_edges(repo_path: Path, window_days: int = 30) -> dict:
     recent_groups = window_commits(window_days, 0)
     old_groups = window_commits(window_days * 2, window_days)
 
-    # ── 统计 edges、partner 数、跨模块共现 ──
-    edge_counter = Counter()          # {(fa, fb): weight}
-    recent_map = defaultdict(set)     # {file: {partners}}
-    bx_counter = Counter()            # {file: 跨模块共现次数}
-
-    for files in recent_groups:
-        flist = list(files)
-        for i, fa in enumerate(flist):
-            for fb in flist[i + 1:]:
-                key = tuple(sorted([fa, fb]))
-                edge_counter[key] += 1
-                recent_map[fa].add(fb)
-                recent_map[fb].add(fa)
-                ma = fa.replace("\\", "/").split("/")[0] if "/" in fa or "\\" in fa else ""
-                mb = fb.replace("\\", "/").split("/")[0] if "/" in fb or "\\" in fb else ""
-                if ma and mb and ma != mb:
-                    bx_counter[fa] += 1
-                    bx_counter[fb] += 1
-
-    # ── 旧窗口 partner 数 ──
-    old_map = defaultdict(set)
-    for files in old_groups:
-        flist = list(files)
-        for i, fa in enumerate(flist):
-            for fb in flist[i + 1:]:
-                old_map[fa].add(fb)
-                old_map[fb].add(fa)
-
-    # ── 构建 nodes ──
-    all_files = set(recent_map.keys()) | set(old_map.keys())
-    nodes = []
-    for f in all_files:
-        rec_p = len(recent_map.get(f, set()))
-        old_p = len(old_map.get(f, set()))
-        if rec_p == 0 and old_p == 0:
-            continue
-        denom = old_p or 1
-        growth = round((rec_p - old_p) / denom, 2)
-        module = f.replace("\\", "/").split("/")[0] if "/" in f or "\\" in f else ""
-        nodes.append({
-            "id": f,
-            "label": f.split("/")[-1].split("\\")[-1],
-            "module": module,
-            "recent_partners": rec_p,
-            "old_partners": old_p,
-            "coupling_growth": growth,
-            "boundary_crossings": bx_counter.get(f, 0),
-            "risk": _classify_coupling_risk(rec_p, rec_p - old_p),
-        })
-
-    # 按 coupling_growth 降序，取 top 30
-    nodes.sort(key=lambda x: (-x["coupling_growth"], -x["boundary_crossings"]))
-    top_nodes = nodes[:30]
-    top_ids = {n["id"] for n in top_nodes}
-
-    # ── 构建 edges（只包含 top 节点之间的边） ──
-    edges = []
-    for (fa, fb), weight in edge_counter.most_common(200):
-        if fa in top_ids and fb in top_ids:
-            edges.append({"source": fa, "target": fb, "weight": weight})
-
-    return {"nodes": top_nodes, "edges": edges}
-
-
-def _classify_coupling_risk(rec_partners: int, partner_delta: int) -> str:
-    """耦合风险分级：伙伴数 ≥8 且增量 ≥5 → high；≥4 且增量 ≥2 → medium；否则 low。"""
-    if rec_partners >= 8 and partner_delta >= 5:
-        return "high"
-    if rec_partners >= 4 and partner_delta >= 2:
-        return "medium"
-    return "low"
+    return metrics.compute_cochange_edges(recent_groups, old_groups)
 
 
 def get_file_change_context(repo_path: Path, file_path: str, count: int = 10) -> list[dict]:

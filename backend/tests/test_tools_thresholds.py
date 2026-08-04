@@ -2,7 +2,7 @@
 
 import pytest
 
-from services.git_service import _classify_coupling_risk
+from services.metrics import classify_coupling_risk
 
 
 @pytest.mark.parametrize("partners,delta,expected", [
@@ -18,4 +18,4 @@ from services.git_service import _classify_coupling_risk
     (8, -1, "low"),
 ])
 def test_classify_coupling_risk(partners, delta, expected):
-    assert _classify_coupling_risk(partners, delta) == expected
+    assert classify_coupling_risk(partners, delta) == expected
