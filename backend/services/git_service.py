@@ -116,13 +116,21 @@ def _git_auth_env(repo_url: str | None) -> dict[str, str] | None:
     非 GitHub / SSH / 无 token 返回 None。
     """
     auth = _github_auth_header()
-    if auth and repo_url and repo_url.startswith("https://") and "github.com" in repo_url:
+    if auth and _is_github_https(repo_url):
         return {
             "GIT_CONFIG_COUNT": "1",
             "GIT_CONFIG_KEY_0": "http.extraHeader",
             "GIT_CONFIG_VALUE_0": auth,
         }
     return None
+
+
+def _is_github_https(repo_url: str | None) -> bool:
+    """精确判断是否为 GitHub 官方主机的 https URL（防 github.com.evil.com / userinfo 注入）。"""
+    if not repo_url or not repo_url.startswith("https://"):
+        return False
+    host = (urlparse(repo_url).hostname or "").lower()
+    return host in ("github.com", "www.github.com")
 
 
 def _git_net_args(extra_args: list[str], repo_url: str | None = None) -> list[str]:

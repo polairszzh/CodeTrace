@@ -437,10 +437,15 @@ def test_github_token_auth_env(monkeypatch):
     # 进程参数里不出现认证头
     args = git_service._git_net_args(["ls-remote", url, "HEAD"], repo_url=url)
     assert not any("extraHeader" in a for a in args)
-    # 非 GitHub 平台不加
+    # 非 GitHub 平台 / 恶意相似主机不加（防 token 泄露）
+    assert git_service._git_auth_env("https://github.com.evil.com/o/r.git") is None
+    assert git_service._git_auth_env("https://github.com@evil.com/o/r.git") is None
+    assert git_service._git_auth_env("https://gitlab.com/github.com/o/r.git") is None
     assert git_service._git_auth_env("https://gitlab.com/o/r.git") is None
     # SSH 形式不加
     assert git_service._git_auth_env("git@github.com:o/r.git") is None
+    # 官方主机注入
+    assert git_service._git_auth_env("https://www.github.com/o/r.git") is not None
     # 无 token 不加
     monkeypatch.delenv("GITHUB_TOKEN")
     assert git_service._git_auth_env(url) is None
