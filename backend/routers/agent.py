@@ -43,7 +43,11 @@ async def agent_analyze(req: TraceRequest, goal: str = ""):
             yield "data: " + json.dumps({"step": 0, "error": f"Agent 执行失败: {str(e)}"}, ensure_ascii=False) + "\n\n"
         yield "data: [DONE]\n\n"
 
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/graph/analyze")
@@ -165,4 +169,8 @@ async def agent_ask(req: AskRequest):
             yield f"data: {json.dumps({'error': f'Agent 执行失败: {str(e)}'}, ensure_ascii=False)}\n\n"
         yield "data: [DONE]\n\n"
 
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
