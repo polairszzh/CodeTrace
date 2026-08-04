@@ -57,6 +57,13 @@ async def repo_files(repo_url: str, path: str = ""):
     entries = []
     for f in files:
         if prefix:
+            if f == prefix:
+                # path 直接命中文件本身：作为叶子节点返回，避免路径重复拼接
+                name = f.rsplit("/", 1)[-1]
+                if name not in seen:
+                    seen.add(name)
+                    entries.append({"name": name, "path": f, "type": "file"})
+                continue
             rel = f[len(prefix) + 1:] if f.startswith(prefix + "/") else f
         else:
             rel = f
