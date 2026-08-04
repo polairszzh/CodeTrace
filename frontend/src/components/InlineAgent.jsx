@@ -8,7 +8,15 @@ export default function InlineAgent({ context, onClose }) {
   const [followUp, setFollowUp] = useState('')
   const [initialLoading, setInitialLoading] = useState(true)
   const [streamStatus, setStreamStatus] = useState('')
+  const [visibleText, setVisibleText] = useState('')
+  const [typing, setTyping] = useState(false)
   const contentRef = useRef(null)
+  const pendingRef = useRef('')
+  const shownRef = useRef(0)
+  const timerRef = useRef(null)
+  const controllerRef = useRef(null)
+  const mountedRef = useRef(true)
+  const requestIdRef = useRef(0)
 
   useEffect(() => {
     if (contentRef.current) {
@@ -16,18 +24,112 @@ export default function InlineAgent({ context, onClose }) {
     }
   })
 
+  // 组件卸载时中止请求并清理定时器，避免关闭面板后继续 setState
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      controllerRef.current?.abort()
+      if (timerRef.current) {
+        clearInterval(timerRef.current)
+        timerRef.current = null
+      }
+    }
+  }, [])
+
+  const stopTypewriter = () => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current)
+      timerRef.current = null
+    }
+    if (mountedRef.current) setTyping(false)
+  }
+
+  // 流结束：按快速节奏打完剩余字符（视觉层）。答案已由调用方先行落盘，
+  // 动画被打断也不丢内容
+  const finishTypewriter = () => {
+    if (!mountedRef.current) return
+    const total = pendingRef.current.length
+    const remaining = total - shownRef.current
+    if (remaining <= 0) {
+      stopTypewriter()
+      return
+    }
+    if (timerRef.current) {
+      clearInterval(timerRef.current)
+      timerRef.current = null
+    }
+    timerRef.current = setInterval(() => {
+      if (!mountedRef.current) return
+      const t = pendingRef.current.length
+      if (shownRef.current >= t) {
+        clearInterval(timerRef.current)
+        timerRef.current = null
+        stopTypewriter()
+        return
+      }
+      let steps = 0
+      while (steps < 12 && shownRef.current < t) {
+        const cp = pendingRef.current.codePointAt(shownRef.current)
+        shownRef.current += (cp !== undefined && cp > 0xFFFF) ? 2 : 1
+        steps += 1
+      }
+      setVisibleText(pendingRef.current.slice(0, shownRef.current))
+    }, 8)
+  }
+
+  const startTypewriter = () => {
+    if (timerRef.current) return
+    if (mountedRef.current) setTyping(true)
+    // 打字机：每 20ms 显示两个字符；追上已接收内容时保持等待，
+    // 后续 report 块继续追加，流结束才 flush
+    timerRef.current = setInterval(() => {
+      if (!mountedRef.current) return
+      const total = pendingRef.current.length
+      if (shownRef.current >= total) {
+        // 追上已接收内容：暂停计时器，下一个 report 到达时重启
+        clearInterval(timerRef.current)
+        timerRef.current = null
+        return
+      }
+      // 按 Unicode code point 推进，避免 emoji/代理对半个字符闪烁
+      let steps = 0
+      while (steps < 2 && shownRef.current < total) {
+        const cp = pendingRef.current.codePointAt(shownRef.current)
+        shownRef.current += (cp !== undefined && cp > 0xFFFF) ? 2 : 1
+        steps += 1
+      }
+      setVisibleText(pendingRef.current.slice(0, shownRef.current))
+    }, 20)
+  }
+
   const runAnalysis = async (question) => {
+    // 请求 id：仅当前请求允许回写状态，旧请求（被 abort）的回调全部失效
+    const requestId = ++requestIdRef.current
+    // 中止上一个请求，避免旧流内容混入新问题
+    controllerRef.current?.abort()
+    const controller = new AbortController()
+    controllerRef.current = controller
+
     setError('')
     setInitialLoading(history.length === 0)
     setStreamStatus('')
+    pendingRef.current = ''
+    shownRef.current = 0
+    setVisibleText('')
+    stopTypewriter()
 
     // 添加问题到对话
-    setHistory(p => [...p, { q: question, a: '', id: Date.now() }])
+    const entryId = Date.now()
+    setHistory(p => [...p, { q: question, a: '', id: entryId }])
 
+    let accumulated = ''
+    let firstChunk = true
     try {
       const res = await fetch('/api/agent/ask', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({
           repo_url: context.repoUrl,
           file_path: context.filePath || '',
@@ -41,12 +143,11 @@ export default function InlineAgent({ context, onClose }) {
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
-      let accumulated = ''
-      let firstChunk = true
 
-      while (true) {
+      while (requestIdRef.current === requestId) {
         const { done, value } = await reader.read()
         if (done) break
+        if (!mountedRef.current) break
 
         buffer += decoder.decode(value, { stream: true })
         const lines = buffer.split('\n')
@@ -59,9 +160,12 @@ export default function InlineAgent({ context, onClose }) {
           if (payload === '[DONE]') continue
           try {
             const ev = JSON.parse(payload)
+            if (requestIdRef.current !== requestId) break
             if (ev.type === 'report') {
+              pendingRef.current += ev.content
               accumulated += ev.content
               setStreamStatus('')
+              startTypewriter()
               if (firstChunk) {
                 firstChunk = false
                 setInitialLoading(false)
@@ -81,32 +185,29 @@ export default function InlineAgent({ context, onClose }) {
             }
           } catch { /* skip */ }
         }
-
-        // 逐段更新回答
-        if (accumulated) {
-          setHistory(p => {
-            const h = [...p]
-            const last = { ...h[h.length - 1] }
-            last.a = accumulated
-            h[h.length - 1] = last
-            return h
-          })
-          await new Promise(r => setTimeout(r, 0))
-        }
       }
 
       // 最终写入完整内容
-      setHistory(p => {
-        const h = [...p]
-        const last = { ...h[h.length - 1] }
-        last.a = accumulated
-        h[h.length - 1] = last
-        return h
-      })
+      if (mountedRef.current && requestIdRef.current === requestId) {
+        // 先落盘完整答案（打字机仅视觉层，被打断也不丢）
+        setHistory(p => p.map(item => item.id === entryId ? { ...item, a: accumulated } : item))
+        finishTypewriter()
+      }
     } catch (e) {
-      if (e.name !== 'AbortError') setError(e.message)
+      // 仅当前请求可停表：被 abort 的旧请求不得误清新请求的定时器
+      if (requestIdRef.current === requestId) stopTypewriter()
+      // 出错/中断（如中途追问）时按条目 id 写回已接收内容：
+      // 旧请求也能保存自己的部分回答，且不会覆盖新问题条目
+      if (mountedRef.current && accumulated) {
+        setHistory(p => p.map(item => item.id === entryId ? { ...item, a: accumulated } : item))
+      }
+      if (e.name !== 'AbortError' && mountedRef.current && requestIdRef.current === requestId) {
+        setError(e.message)
+      }
     } finally {
-      if (firstChunk) setInitialLoading(false)
+      if (mountedRef.current && requestIdRef.current === requestId) {
+        if (firstChunk) setInitialLoading(false)
+      }
     }
   }
 
@@ -190,9 +291,10 @@ export default function InlineAgent({ context, onClose }) {
 
           {history.map((item, i) => {
             const isLast = i === history.length - 1
-            const streaming = isLast && item.a === ''
+            const streaming = isLast && typing && !initialLoading
+            const waiting = isLast && item.a === '' && !typing && !error
             // 首次加载时全屏 spinner 覆盖，不显示 inline spinner
-            if (streaming && initialLoading) return null
+            if (isLast && initialLoading) return null
             return (
               <div key={item.id} className="space-y-3">
                 {i > 0 && (
@@ -201,11 +303,17 @@ export default function InlineAgent({ context, onClose }) {
                     <span style={{ color: 'var(--color-accent)' }}>Q:</span> {item.q}
                   </div>
                 )}
-                {streaming ? (
+                {waiting ? (
                   <div className="flex items-center gap-2 text-sm" style={{ color: 'var(--color-text-muted)' }}>
                     <div className="w-4 h-4 border-2 rounded-full animate-spin flex-shrink-0"
                       style={{ borderColor: 'var(--color-border)', borderTopColor: 'var(--color-accent)' }} />
                     {streamStatus || '分析中...'}
+                  </div>
+                ) : streaming ? (
+                  <div className="text-sm leading-relaxed markdown-report"
+                    style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                    {visibleText}
+                    <div className="mt-2 h-4 w-2 animate-pulse" style={{ background: 'var(--color-accent)' }} />
                   </div>
                 ) : item.a ? (
                   <div className="text-sm leading-relaxed markdown-report">
