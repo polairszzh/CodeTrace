@@ -14,6 +14,8 @@ export default function InlineAgent({ context, onClose }) {
   const pendingRef = useRef('')
   const shownRef = useRef(0)
   const timerRef = useRef(null)
+  const controllerRef = useRef(null)
+  const mountedRef = useRef(true)
 
   useEffect(() => {
     if (contentRef.current) {
@@ -21,8 +23,10 @@ export default function InlineAgent({ context, onClose }) {
     }
   })
 
-  // 组件卸载时清理打字机定时器，避免关闭面板后继续 setState
+  // 组件卸载时中止请求并清理定时器，避免关闭面板后继续 setState
   useEffect(() => () => {
+    mountedRef.current = false
+    controllerRef.current?.abort()
     if (timerRef.current) {
       clearInterval(timerRef.current)
       timerRef.current = null
@@ -34,21 +38,22 @@ export default function InlineAgent({ context, onClose }) {
       clearInterval(timerRef.current)
       timerRef.current = null
     }
-    setTyping(false)
+    if (mountedRef.current) setTyping(false)
   }
 
   const flushTypewriter = () => {
     stopTypewriter()
     shownRef.current = pendingRef.current.length
-    setVisibleText(pendingRef.current)
+    if (mountedRef.current) setVisibleText(pendingRef.current)
   }
 
   const startTypewriter = () => {
     if (timerRef.current) return
-    setTyping(true)
+    if (mountedRef.current) setTyping(true)
     // 打字机：每 20ms 显示两个字符；追上已接收内容时保持等待，
     // 后续 report 块继续追加，流结束才 flush
     timerRef.current = setInterval(() => {
+      if (!mountedRef.current) return
       const total = pendingRef.current.length
       if (shownRef.current >= total) {
         return
@@ -59,6 +64,11 @@ export default function InlineAgent({ context, onClose }) {
   }
 
   const runAnalysis = async (question) => {
+    // 中止上一个请求，避免旧流内容混入新问题
+    controllerRef.current?.abort()
+    const controller = new AbortController()
+    controllerRef.current = controller
+
     setError('')
     setInitialLoading(history.length === 0)
     setStreamStatus('')
@@ -74,6 +84,7 @@ export default function InlineAgent({ context, onClose }) {
       const res = await fetch('/api/agent/ask', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({
           repo_url: context.repoUrl,
           file_path: context.filePath || '',
@@ -92,6 +103,7 @@ export default function InlineAgent({ context, onClose }) {
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
+        if (!mountedRef.current) break
 
         buffer += decoder.decode(value, { stream: true })
         const lines = buffer.split('\n')
@@ -131,17 +143,21 @@ export default function InlineAgent({ context, onClose }) {
 
       // 最终写入完整内容
       flushTypewriter()
-      setHistory(p => {
-        const h = [...p]
-        const last = { ...h[h.length - 1] }
-        last.a = pendingRef.current
-        h[h.length - 1] = last
-        return h
-      })
+      if (mountedRef.current) {
+        setHistory(p => {
+          const h = [...p]
+          const last = { ...h[h.length - 1] }
+          last.a = pendingRef.current
+          h[h.length - 1] = last
+          return h
+        })
+      }
     } catch (e) {
-      if (e.name !== 'AbortError') setError(e.message)
+      if (e.name !== 'AbortError' && mountedRef.current) setError(e.message)
     } finally {
-      if (firstChunk) setInitialLoading(false)
+      if (mountedRef.current) {
+        if (firstChunk) setInitialLoading(false)
+      }
     }
   }
 
@@ -244,8 +260,9 @@ export default function InlineAgent({ context, onClose }) {
                     {streamStatus || '分析中...'}
                   </div>
                 ) : streaming ? (
-                  <div className="text-sm leading-relaxed markdown-report">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{visibleText}</ReactMarkdown>
+                  <div className="text-sm leading-relaxed markdown-report"
+                    style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                    {visibleText}
                     <div className="mt-2 h-4 w-2 animate-pulse" style={{ background: 'var(--color-accent)' }} />
                   </div>
                 ) : item.a ? (
