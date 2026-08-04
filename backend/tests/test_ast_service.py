@@ -1,5 +1,4 @@
-from services.ast_service import extract_functions, extract_classes, JS_LANGUAGE
-
+from services.ast_service import JS_LANGUAGE, extract_classes, extract_functions
 
 PY_CODE = """
 import os

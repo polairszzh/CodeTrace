@@ -1,5 +1,4 @@
-from typing import Callable, Any
-import json
+from typing import Callable
 
 
 class Tool:

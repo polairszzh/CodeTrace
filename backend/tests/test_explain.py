@@ -6,7 +6,7 @@ KNOWN_FILE = "backend/services/git_service.py"
 
 def test_get_file_change_context_structure():
     """验证变更上下文数据返回正确结构"""
-    from services.git_service import get_file_change_context, clone_or_pull_repo
+    from services.git_service import clone_or_pull_repo, get_file_change_context
 
     repo = clone_or_pull_repo(REPO_URL)
     ctx = get_file_change_context(repo, KNOWN_FILE, count=3)
@@ -21,7 +21,7 @@ def test_get_file_change_context_structure():
 
 def test_file_change_context_has_diff():
     """验证每个 commit 包含 diff 摘要"""
-    from services.git_service import get_file_change_context, clone_or_pull_repo
+    from services.git_service import clone_or_pull_repo, get_file_change_context
 
     repo = clone_or_pull_repo(REPO_URL)
     ctx = get_file_change_context(repo, KNOWN_FILE, count=3)

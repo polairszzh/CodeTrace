@@ -5,7 +5,7 @@ REPO_URL = "https://github.com/polairszzh/CodeTrace.git"
 
 def test_get_co_change_trends_structure():
     """验证 co-change 趋势数据返回正确结构"""
-    from services.git_service import get_co_change_trends, clone_or_pull_repo
+    from services.git_service import clone_or_pull_repo, get_co_change_trends
 
     repo = clone_or_pull_repo(REPO_URL)
     trends = get_co_change_trends(repo, window_days=30)
@@ -24,7 +24,7 @@ def test_get_co_change_trends_structure():
 
 def test_get_co_change_trends_ordering():
     """验证结果按风险排序"""
-    from services.git_service import get_co_change_trends, clone_or_pull_repo
+    from services.git_service import clone_or_pull_repo, get_co_change_trends
 
     repo = clone_or_pull_repo(REPO_URL)
     trends = get_co_change_trends(repo, window_days=30)
@@ -38,7 +38,7 @@ def test_get_co_change_trends_ordering():
 
 def test_get_co_change_trends_window_param():
     """验证可以指定不同的时间窗口"""
-    from services.git_service import get_co_change_trends, clone_or_pull_repo
+    from services.git_service import clone_or_pull_repo, get_co_change_trends
 
     repo = clone_or_pull_repo(REPO_URL)
     trends_60 = get_co_change_trends(repo, window_days=60)

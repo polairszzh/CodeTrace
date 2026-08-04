@@ -86,7 +86,6 @@ def test_graph_analyze_api():
 
 def test_graph_state_machine():
     """验证 StateGraph 状态转换正确"""
-    from langgraph.graph import StateGraph
     from services.agent.graph import AgentState
 
     # 验证状态定义完整

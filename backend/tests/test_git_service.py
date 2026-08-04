@@ -1,4 +1,9 @@
-from services.git_service import clone_or_pull_repo, get_file_commits, get_commit_diff_stats
+from services.git_service import (
+    clone_or_pull_repo,
+    get_commit_diff_stats,
+    get_file_commits,
+)
+
 
 def test_clone_and_get_commits(tmp_path):
     # 用 CodeTrace 自己的仓库来测试

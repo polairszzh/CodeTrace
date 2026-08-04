@@ -1,0 +1,43 @@
+name: CI
+"on":
+  pull_request:
+  push:
+    branches: [main, develop]
+permissions:
+  contents: read
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        working-directory: backend
+        run: uv sync --dev
+      - name: Lint
+        working-directory: backend
+        run: uv run ruff check .
+      # 离线/无密钥子集：网络与 LLM 用例（真实仓库、GitHub API、LLM）需本地或配置 secrets 后运行
+      - name: Test (hermetic)
+        working-directory: backend
+        run: uv run pytest tests/test_ast_service.py tests/test_schemas.py tests/test_security.py tests/test_tools_thresholds.py tests/test_git_graph.py tests/test_index_service.py tests/test_routers.py tests/test_tracking.py -q
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install
+        working-directory: frontend
+        run: npm ci
+      - name: Lint
+        working-directory: frontend
+        run: npm run lint
+      - name: Build
+        working-directory: frontend
+        run: npm run build

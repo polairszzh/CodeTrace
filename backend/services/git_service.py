@@ -1,6 +1,6 @@
+import logging
 import os
 import re
-import logging
 import subprocess
 import time
 from pathlib import Path
@@ -8,8 +8,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from services import index_service
-from services import tracking_service
+from services import index_service, tracking_service
 
 logger = logging.getLogger(__name__)
 
@@ -702,7 +701,8 @@ def get_repo_summary(repo_path: Path) -> dict:
     authors = set()
     recent = []
     for line in log_result.stdout.strip().split("\n"):
-        if not line: continue
+        if not line:
+            continue
         parts = line.split("|", 2)
         if len(parts) == 3:
             authors.add(parts[0])
@@ -721,7 +721,7 @@ def get_repo_summary(repo_path: Path) -> dict:
         ["git", "ls-tree", "-r", "HEAD"],
         cwd=repo_path, capture_output=True, text=True, encoding="utf-8", timeout=15,
     )
-    total_files = len([l for l in files_result.stdout.split("\n") if l.strip()])
+    total_files = len([line for line in files_result.stdout.split("\n") if line.strip()])
 
     # Top changed files
     top = get_top_changed_files(repo_path, top_n=10)
@@ -799,8 +799,8 @@ def get_file_health_stats(repo_path: Path, top_n: int = 20) -> list[dict]:
         except Exception:
             pass
 
-    from collections import defaultdict
     import datetime
+    from collections import defaultdict
 
     # git log --numstat 输出格式：
     # additions\tdeletions\tfilepath
@@ -1017,8 +1017,8 @@ def get_co_change_trends(repo_path: Path, window_days: int = 30) -> list[dict]:
         except Exception:
             pass
 
-    from collections import defaultdict, Counter
     import datetime
+    from collections import Counter, defaultdict
 
     now = datetime.datetime.now()
 
@@ -1108,8 +1108,8 @@ def get_co_change_edges(repo_path: Path, window_days: int = 30) -> dict:
         except Exception:
             pass
 
-    from collections import defaultdict, Counter
     import datetime
+    from collections import Counter, defaultdict
 
     now = datetime.datetime.now()
 

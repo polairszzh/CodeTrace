@@ -6,7 +6,8 @@ import os
 import threading
 from typing import TypedDict
 
-from langgraph.graph import StateGraph, END
+from langgraph.graph import END, StateGraph
+
 from services.agent.tool_registry import ToolRegistry
 from services.llm_service import LLMService
 

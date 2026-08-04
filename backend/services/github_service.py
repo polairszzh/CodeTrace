@@ -1,6 +1,7 @@
-import re
 import logging
 import os
+import re
+
 import httpx
 
 from services.index_service import get_cached_pr, set_cached_pr
@@ -103,5 +104,5 @@ class GitHubClient:
                 }
                 for c in data
             ]
-        except Exception as e:
+        except Exception:
             return []

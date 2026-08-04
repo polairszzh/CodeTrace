@@ -5,7 +5,7 @@ REPO_URL = "https://github.com/polairszzh/CodeTrace.git"
 
 def test_get_file_health_stats_structure():
     """验证 get_file_health_stats 返回正确结构"""
-    from services.git_service import get_file_health_stats, clone_or_pull_repo
+    from services.git_service import clone_or_pull_repo, get_file_health_stats
 
     repo = clone_or_pull_repo(REPO_URL)
     stats = get_file_health_stats(repo, top_n=5)
@@ -23,7 +23,7 @@ def test_get_file_health_stats_structure():
 
 def test_file_health_has_churn_data():
     """验证 churn 数据非零"""
-    from services.git_service import get_file_health_stats, clone_or_pull_repo
+    from services.git_service import clone_or_pull_repo, get_file_health_stats
 
     repo = clone_or_pull_repo(REPO_URL)
     stats = get_file_health_stats(repo, top_n=3)
@@ -37,7 +37,7 @@ def test_file_health_has_churn_data():
 
 def test_file_health_has_messages():
     """验证 commit_messages 不为空"""
-    from services.git_service import get_file_health_stats, clone_or_pull_repo
+    from services.git_service import clone_or_pull_repo, get_file_health_stats
 
     repo = clone_or_pull_repo(REPO_URL)
     stats = get_file_health_stats(repo, top_n=3)
@@ -49,7 +49,7 @@ def test_file_health_has_messages():
 
 def test_file_health_no_hardcoded_paths():
     """验证新版不再硬编码文件夹前缀，能检测到所有文件类型"""
-    from services.git_service import get_file_health_stats, clone_or_pull_repo
+    from services.git_service import clone_or_pull_repo, get_file_health_stats
 
     repo = clone_or_pull_repo(REPO_URL)
     stats = get_file_health_stats(repo, top_n=50)

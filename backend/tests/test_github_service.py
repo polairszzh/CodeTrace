@@ -1,4 +1,5 @@
 import os
+
 from services.github_service import GitHubClient
 
 client = GitHubClient(token=os.getenv("GITHUB_TOKEN", ""))
