@@ -680,7 +680,7 @@ def get_file_health_stats(repo_path: Path, top_n: int = 20) -> list[dict]:
                        FROM file_commits fc
                        JOIN commits c ON fc.commit_hash = c.hash
                        WHERE fc.file IN ({placeholders})
-                     ) WHERE rn <= 5""",
+                     ) WHERE rn <= 5 ORDER BY rn""",
                 files,
             ).fetchall()
             out = {}
