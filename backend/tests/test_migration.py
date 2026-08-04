@@ -5,8 +5,8 @@ from services.ast_service import (
     get_language_for_file,
     search_function_across_files,
 )
-from services.git_service import (
-    clone_or_pull_repo,
+from services.git_runner import clone_or_pull_repo
+from services.git_stats import (
     get_file_commits,
     list_files_at_commit,
     list_files_changed_in_commit,
@@ -66,7 +66,7 @@ def test_search_function_finds_itself_in_same_repo():
 
 def test_extract_functions_from_self():
     """验证能从文件中提取至少 3 个函数（不用特定函数名，避免编码问题）"""
-    from services.git_service import get_file_content_at_commit as gf
+    from services.git_stats import get_file_content_at_commit as gf
 
     repo = clone_or_pull_repo(REPO_URL)
     commits = get_file_commits(repo, KNOWN_FILE)

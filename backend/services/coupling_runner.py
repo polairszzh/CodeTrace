@@ -2,7 +2,8 @@
 
 import asyncio
 
-from services.git_service import clone_or_pull_repo, get_co_change_edges
+from services.git_runner import clone_or_pull_repo
+from services.git_stats import get_co_change_edges
 from services.llm_service import LLMService
 
 

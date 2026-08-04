@@ -5,7 +5,8 @@ REPO_URL = "https://github.com/polairszzh/CodeTrace.git"
 
 def test_get_recent_commit_groups_structure():
     """验证 commit 分组返回正确结构"""
-    from services.git_service import clone_or_pull_repo, get_recent_commit_groups
+    from services.git_runner import clone_or_pull_repo
+    from services.git_stats import get_recent_commit_groups
 
     repo = clone_or_pull_repo(REPO_URL)
     groups = get_recent_commit_groups(repo, count=5)
@@ -22,7 +23,8 @@ def test_get_recent_commit_groups_structure():
 
 def test_commit_group_file_detailed():
     """验证每个 commit 的文件包含 path, additions, deletions"""
-    from services.git_service import clone_or_pull_repo, get_recent_commit_groups
+    from services.git_runner import clone_or_pull_repo
+    from services.git_stats import get_recent_commit_groups
 
     repo = clone_or_pull_repo(REPO_URL)
     groups = get_recent_commit_groups(repo, count=3)

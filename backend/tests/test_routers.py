@@ -7,7 +7,7 @@ import subprocess
 import pytest
 from fastapi.testclient import TestClient
 
-from services import git_service
+from services import git_runner
 
 
 def _date(days_ago: int) -> str:
@@ -30,8 +30,8 @@ def repo_env(tmp_path, monkeypatch):
     monkeypatch.setenv("CODETRACE_INDEX_DIR", str(tmp_path / "index"))
     cache = tmp_path / "cache"
     cache.mkdir()
-    monkeypatch.setattr(git_service, "CACHE_DIR", cache)
-    monkeypatch.setattr(git_service, "_LOCK_DIR", cache / ".locks")
+    monkeypatch.setattr(git_runner, "CACHE_DIR", cache)
+    monkeypatch.setattr(git_runner, "_LOCK_DIR", cache / ".locks")
 
     repo = cache / "github.com_owner_repo"
     repo.mkdir()
@@ -124,7 +124,7 @@ def test_repo_pr_info_invalid_url():
 def test_repo_index_status_uncloned(tmp_path, monkeypatch):
     """未克隆仓库：SSE 立即返回 not_found。"""
     from main import app
-    monkeypatch.setattr(git_service, "CACHE_DIR", tmp_path / "no_cache")
+    monkeypatch.setattr(git_runner, "CACHE_DIR", tmp_path / "no_cache")
     r = TestClient(app).get("/api/repo/index-status", params={"repo_url": URL})
     assert r.status_code == 200
     assert "not_found" in r.text

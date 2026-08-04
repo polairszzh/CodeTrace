@@ -23,7 +23,7 @@ def test_trace_endpoint():
 def test_trace_function_endpoint():
     response = client.post("/api/trace/function?function_name=get_file_commits", json={
         "repo_url": "https://github.com/polairszzh/CodeTrace.git",
-        "file_path": "backend/services/git_service.py"
+        "file_path": "backend/services/git_stats.py"
     })
     assert response.status_code == 200
     data = response.json()
@@ -35,7 +35,7 @@ def test_trace_function_endpoint():
 def test_trace_function_not_found():
     response = client.post("/api/trace/function?function_name=non_existent_func", json={
         "repo_url": "https://github.com/polairszzh/CodeTrace.git",
-        "file_path": "backend/services/git_service.py"
+        "file_path": "backend/services/git_stats.py"
     })
     assert response.status_code == 200
     data = response.json()

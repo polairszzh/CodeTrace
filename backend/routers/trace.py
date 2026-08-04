@@ -21,8 +21,12 @@ from services.ast_service import (
     trace_function_across_commits,
 )
 from services.coupling_runner import run_coupling_analysis
-from services.git_service import (
+from services.git_runner import (
     clone_or_pull_repo,
+    repo_full_from_url,
+    repo_path_for_url,
+)
+from services.git_stats import (
     get_commit_diff_stats,
     get_file_commit_counts,
     get_file_commits,
@@ -30,8 +34,6 @@ from services.git_service import (
     get_git_graph,
     get_repo_summary,
     list_files_at_commit,
-    repo_full_from_url,
-    repo_path_for_url,
 )
 from services.github_service import GitHubClient
 from services.index_service import get_index_status, index_fresh

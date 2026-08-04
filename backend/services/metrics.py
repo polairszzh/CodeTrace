@@ -1,4 +1,4 @@
-"""共享统计计算 — git_service 与 index_service 双轨收敛的公共实现。
+"""共享统计计算 — git_stats 与 index_service 双轨收敛的公共实现。
 
 职责边界：各 service 只负责「从各自数据源获取窗口分组/原始行」，
 本模块负责纯计算（co-change 指标、耦合风险分级、健康度时效评分与组装），
@@ -43,7 +43,7 @@ def build_metrics(groups: list[set[str]]) -> dict:
 
 
 def compute_cochange_trends(recent_groups, old_groups, limit: int = 30) -> list[dict]:
-    """双窗口 co-change 趋势，输出与旧版 git_service/index_service 完全一致。"""
+    """双窗口 co-change 趋势，输出与旧版 git_stats/index_service 完全一致。"""
     recent_m = build_metrics(recent_groups)
     old_m = build_metrics(old_groups)
     results = []

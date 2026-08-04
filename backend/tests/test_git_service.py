@@ -1,8 +1,5 @@
-from services.git_service import (
-    clone_or_pull_repo,
-    get_commit_diff_stats,
-    get_file_commits,
-)
+from services.git_runner import clone_or_pull_repo
+from services.git_stats import get_commit_diff_stats, get_file_commits
 
 
 def test_clone_and_get_commits(tmp_path):
