@@ -1082,7 +1082,7 @@ def get_co_change_trends(repo_path: Path, window_days: int = 30) -> list[dict]:
             "old_partners": old["partners"],
             "coupling_growth": growth,
             "boundary_crossings": rec["bx"],
-            "risk": "high" if rec_p >= 8 and delta >= 5 else ("medium" if rec_p >= 4 and delta >= 2 else "low"),
+            "risk": _classify_coupling_risk(rec_p, delta),
         })
 
     results.sort(key=lambda x: (-x["coupling_growth"], -x["boundary_crossings"]))
@@ -1184,7 +1184,7 @@ def get_co_change_edges(repo_path: Path, window_days: int = 30) -> dict:
             "old_partners": old_p,
             "coupling_growth": growth,
             "boundary_crossings": bx_counter.get(f, 0),
-            "risk": "high" if rec_p >= 8 and (rec_p - old_p) >= 5 else ("medium" if rec_p >= 4 and (rec_p - old_p) >= 2 else "low"),
+            "risk": _classify_coupling_risk(rec_p, rec_p - old_p),
         })
 
     # 按 coupling_growth 降序，取 top 30
@@ -1199,6 +1199,15 @@ def get_co_change_edges(repo_path: Path, window_days: int = 30) -> dict:
             edges.append({"source": fa, "target": fb, "weight": weight})
 
     return {"nodes": top_nodes, "edges": edges}
+
+
+def _classify_coupling_risk(rec_partners: int, partner_delta: int) -> str:
+    """耦合风险分级：伙伴数 ≥8 且增量 ≥5 → high；≥4 且增量 ≥2 → medium；否则 low。"""
+    if rec_partners >= 8 and partner_delta >= 5:
+        return "high"
+    if rec_partners >= 4 and partner_delta >= 2:
+        return "medium"
+    return "low"
 
 
 def get_file_change_context(repo_path: Path, file_path: str, count: int = 10) -> list[dict]:
