@@ -93,7 +93,8 @@ export default function InlineAgent({ context, onClose }) {
     stopTypewriter()
 
     // 添加问题到对话
-    setHistory(p => [...p, { q: question, a: '', id: Date.now() }])
+    const entryId = Date.now()
+    setHistory(p => [...p, { q: question, a: '', id: entryId }])
 
     let accumulated = ''
     try {
@@ -162,26 +163,15 @@ export default function InlineAgent({ context, onClose }) {
       // 最终写入完整内容
       if (mountedRef.current && requestIdRef.current === requestId) {
         flushTypewriter()
-        setHistory(p => {
-          const h = [...p]
-          const last = { ...h[h.length - 1] }
-          last.a = accumulated
-          h[h.length - 1] = last
-          return h
-        })
+        setHistory(p => p.map(item => item.id === entryId ? { ...item, a: accumulated } : item))
       }
     } catch (e) {
       // 仅当前请求可停表：被 abort 的旧请求不得误清新请求的定时器
       if (requestIdRef.current === requestId) stopTypewriter()
-      // 出错/中断（如中途追问）时把已接收内容写入历史，避免内容丢失与假 loading
-      if (mountedRef.current && requestIdRef.current === requestId && accumulated) {
-        setHistory(p => {
-          const h = [...p]
-          const last = { ...h[h.length - 1] }
-          last.a = accumulated
-          h[h.length - 1] = last
-          return h
-        })
+      // 出错/中断（如中途追问）时按条目 id 写回已接收内容：
+      // 旧请求也能保存自己的部分回答，且不会覆盖新问题条目
+      if (mountedRef.current && accumulated) {
+        setHistory(p => p.map(item => item.id === entryId ? { ...item, a: accumulated } : item))
       }
       if (e.name !== 'AbortError' && mountedRef.current && requestIdRef.current === requestId) {
         setError(e.message)
