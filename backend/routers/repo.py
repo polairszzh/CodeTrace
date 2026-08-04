@@ -141,7 +141,17 @@ async def repo_dashboard(repo_url: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"仓库操作失败：{str(e)}")
 
-    summary = await asyncio.to_thread(get_repo_summary, repo_path)
+    try:
+        summary = await asyncio.to_thread(get_repo_summary, repo_path)
+    except Exception as e:
+        logger.warning("仓库概要统计失败 %s: %s", repo_url, e)
+        summary = {
+            "total_commits": 0,
+            "total_files": 0,
+            "total_authors": 0,
+            "top_files": [],
+            "recent_commits": [],
+        }
 
     # Risk distribution
     try:
