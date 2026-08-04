@@ -13,6 +13,7 @@ from services.github_service import GitHubClient
 from services.llm_service import LLMService
 from services.ast_service import trace_function_across_commits, trace_class_across_commits, extract_symbols_fast
 from services.index_service import get_symbols as index_get_symbols, index_fresh, get_index_status
+from services import tracking_service
 from services.agent import registry
 from services.agent.planner import AgentPlanner
 from services.agent.graph import run_agent, run_agent_stream
@@ -480,6 +481,39 @@ async def repo_index_status(repo_url: str):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@router.get("/repo/tracking")
+async def repo_tracking(repo_url: str):
+    """持续追踪：最新增量报告 + 快照状态；head 落后时后台触发刷新。"""
+    if not repo_full_from_url(repo_url):
+        raise HTTPException(status_code=400, detail="仓库地址格式错误")
+    try:
+        # clone_or_pull_repo 自带 60s 内存 TTL：轮询期间大部分命中缓存，
+        # 每约 60s 才做一次远程检查，兼顾远程感知与网络开销
+        repo_path = await asyncio.to_thread(clone_or_pull_repo, repo_url)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"仓库操作失败：{str(e)}")
+    data = await asyncio.to_thread(tracking_service.get_tracking, repo_path)
+    if not data.get("head"):
+        data["status"] = "error"
+        data["message"] = "仓库没有提交，无法建立追踪基线"
+        return data
+    if data.get("stale"):
+        if data.get("refresh_error") and tracking_service.in_backoff(repo_path):
+            data["status"] = "error"
+            data["message"] = "增量计算暂不可用（稍后自动重试）：" + str(data["refresh_error"].get("message", "未知原因"))
+            data["retry_after"] = tracking_service.refresh_error_remaining(repo_path)
+        else:
+            if not tracking_service.request_tracking(repo_path) \
+                    and not tracking_service.tracking_thread_alive(repo_path):
+                data["status"] = "error"
+                data["message"] = "追踪后台任务启动失败，请稍后重试"
+            else:
+                data["status"] = "refreshing"
+    else:
+        data["status"] = "ready"
+    return data
 
 
 # ── "问 Agent" 轻量入口 ──────────────────────────────────

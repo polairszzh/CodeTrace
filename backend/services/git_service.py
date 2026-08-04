@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 import httpx
 
 from services import index_service
+from services import tracking_service
 
 logger = logging.getLogger(__name__)
 
@@ -346,6 +347,7 @@ def clone_or_pull_repo(repo_url: str) -> Path:
                 _release_lock(repo_name)
         _request_index_background(repo_path)
         invalidate_git_graph_cache(repo_path)
+        tracking_service.request_tracking(repo_path)
         _cache[repo_url] = (repo_path, time.time())
         return repo_path
 
@@ -379,6 +381,7 @@ def clone_or_pull_repo(repo_url: str) -> Path:
             pull_args, cwd=repo_path, timeout=300,
         )
         invalidate_git_graph_cache(repo_path)
+        tracking_service.request_tracking(repo_path)
     except Exception as e:
         logger.warning("git pull 失败 repo=%s: %s", repo_path, e)
     finally:
