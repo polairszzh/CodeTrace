@@ -13,11 +13,13 @@ app = FastAPI(title="CodeTrace", version="1.0.0")
 _cors_origins = [
     o.strip() for o in os.getenv("CODETRACE_CORS_ORIGINS", "").split(",") if o.strip()
 ] or ["http://localhost:5173", "http://127.0.0.1:5173"]
+# CORS 规范：allow_origins="*" 不能与 allow_credentials=True 同用，配置 * 时自动关闭 credentials
+_cors_credentials = "*" not in _cors_origins
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
-    allow_credentials=True,
+    allow_credentials=_cors_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
