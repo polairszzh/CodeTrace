@@ -124,6 +124,8 @@ def compute_cochange_edges(recent_groups, old_groups, limit: int = 30, edge_limi
 
 # ── 健康度：时效评分与结果组装 ──────────────────────────
 
+# 注意：顺序敏感——SQL CASE 分支按此顺序生成，先命中先得分；
+# 调整桶阈值/分数时需同时保持 Python 与 SQL 语义一致
 _RECENCY_BUCKETS = ((7, 10), (30, 5), (90, 2), (None, 0.5))
 
 
