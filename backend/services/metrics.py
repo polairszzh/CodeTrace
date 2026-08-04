@@ -148,8 +148,11 @@ def recency_score_for_dates(dates, now: datetime | None = None) -> float:
     return score
 
 
-def recency_bucket_sql(date_expr: str) -> str:
-    """生成与 recency_score_for_dates 同桶阈值的 SQL CASE（供索引侧复用常量）。"""
+def _recency_bucket_sql(date_expr: str) -> str:
+    """内部工具：生成与 recency_score_for_dates 同桶阈值的 SQL CASE。
+
+    date_expr 必须为可信常量表达式（仅内部以固定 substr 调用），勿对用户输入拼接。
+    """
     cases = []
     for days, score in _RECENCY_BUCKETS:
         if days is None:

@@ -657,7 +657,7 @@ def get_file_health_stats(repo_path: Path, top_n: int = 20) -> list[dict]:
                GROUP BY fc.file"""
         ).fetchall()
         recency_rows = con.execute(
-            f"""SELECT fc.file, {metrics.recency_bucket_sql('substr(c.date, 1, 10)')}
+            f"""SELECT fc.file, {metrics._recency_bucket_sql('substr(c.date, 1, 10)')}
                 FROM file_commits fc JOIN commits c ON fc.commit_hash = c.hash
                 GROUP BY fc.file"""
         ).fetchall()
@@ -670,22 +670,25 @@ def get_file_health_stats(repo_path: Path, top_n: int = 20) -> list[dict]:
         try:
             if not files:
                 return {}
-            placeholders = ",".join("?" * len(files))
-            msgs = con.execute(
-                f"""SELECT file, message FROM (
-                       SELECT fc.file AS file, c.message AS message,
-                              ROW_NUMBER() OVER (
-                                PARTITION BY fc.file ORDER BY c.date ASC
-                              ) AS rn
-                       FROM file_commits fc
-                       JOIN commits c ON fc.commit_hash = c.hash
-                       WHERE fc.file IN ({placeholders})
-                     ) WHERE rn <= 5 ORDER BY rn""",
-                files,
-            ).fetchall()
             out = {}
-            for f, m in msgs:
-                out.setdefault(f, []).append(m)
+            # 分批查询，避免单条 IN 超过 SQLite 变量上限
+            for i in range(0, len(files), 100):
+                chunk = files[i:i + 100]
+                placeholders = ",".join("?" * len(chunk))
+                msgs = con.execute(
+                    f"""SELECT file, message FROM (
+                           SELECT fc.file AS file, c.message AS message,
+                                  ROW_NUMBER() OVER (
+                                    PARTITION BY fc.file ORDER BY c.date ASC
+                                  ) AS rn
+                           FROM file_commits fc
+                           JOIN commits c ON fc.commit_hash = c.hash
+                           WHERE fc.file IN ({placeholders})
+                         ) WHERE rn <= 5 ORDER BY rn""",
+                    chunk,
+                ).fetchall()
+                for f, m in msgs:
+                    out.setdefault(f, []).append(m)
             return out
         finally:
             con.close()
