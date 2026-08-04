@@ -489,7 +489,10 @@ async def repo_tracking(repo_url: str):
     if not repo_full_from_url(repo_url):
         raise HTTPException(status_code=400, detail="仓库地址格式错误")
     try:
-        repo_path = await asyncio.to_thread(clone_or_pull_repo, repo_url)
+        # 轮询刷新时仓库已存在则跳过 clone/pull，避免重复 git 网络操作
+        repo_path = repo_path_for_url(repo_url)
+        if not repo_path.exists():
+            repo_path = await asyncio.to_thread(clone_or_pull_repo, repo_url)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"仓库操作失败：{str(e)}")
     data = await asyncio.to_thread(tracking_service.get_tracking, repo_path)

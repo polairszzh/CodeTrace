@@ -205,6 +205,15 @@ def test_unquote_git_path():
     assert tracking_service._unquote_git_path('"a\\tb\\n.txt"') == "a\tb\n.txt"
     assert tracking_service._unquote_git_path('"a\\141.txt"') == "aa.txt"  # 八进制 141 = 'a'
     assert tracking_service._unquote_git_path('"\\b\\f"') == "\b\f"
+    # 非 ASCII：八进制字节序列按 UTF-8 解码（\303\251 = é），不得变成单字节乱码
+    assert tracking_service._unquote_git_path('"caf\\303\\251.py"') == "café.py"
+
+
+def test_rename_target():
+    """重命名路径取新侧：分组与全路径两种形式。"""
+    assert tracking_service._rename_target("backend/{a.py => b.py}") == "backend/b.py"
+    assert tracking_service._rename_target("a.py => b.py") == "b.py"
+    assert tracking_service._rename_target("plain.py") == "plain.py"
 
 
 def test_git_exception_returns_none(tmp_path, monkeypatch):

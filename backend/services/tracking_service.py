@@ -84,7 +84,8 @@ def _new_commits(repo_path: Path, from_head: Optional[str]) -> list[dict]:
     try:
         result = subprocess.run(
             ["git", "log", f"{from_head}..HEAD", "--pretty=format:%H%x00%an%x00%ai%x00%s"],
-            cwd=repo_path, capture_output=True, text=True, encoding="utf-8", timeout=60,
+            cwd=repo_path, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=60,
         )
         if result.returncode != 0:
             logger.warning(
@@ -117,7 +118,8 @@ def _range_churn(repo_path: Path, from_head: Optional[str], limit: int = 30) -> 
     try:
         result = subprocess.run(
             ["git", "log", f"{from_head}..HEAD", "--numstat", "--pretty=format:__COMMIT__%H"],
-            cwd=repo_path, capture_output=True, text=True, encoding="utf-8", timeout=60,
+            cwd=repo_path, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=60,
         )
         if result.returncode != 0:
             logger.warning(
@@ -140,9 +142,7 @@ def _range_churn(repo_path: Path, from_head: Optional[str], limit: int = 30) -> 
                 av, dv = int(a or 0), int(d or 0)
             except ValueError:
                 continue
-            f = _unquote_git_path(f.strip())  # git 对含特殊字符路径 C 风格转义，统一还原
-            if " => " in f:
-                f = _unquote_git_path(f.split(" => ", 1)[1].strip())  # 重命名记到新路径
+            f = _rename_target(_unquote_git_path(f.strip()))  # 还原转义 + 重命名取新路径
             entry = churn.setdefault(f, {"commits": 0, "additions": 0, "deletions": 0})
             entry["commits"] += 1
             entry["additions"] += av
@@ -176,11 +176,11 @@ def _prs_from_commits(commits: list[dict]) -> list[dict]:
 
 
 def _unquote_git_path(path: str) -> str:
-    """还原 git C 风格转义的路径（\" \\ \t \n \r 等），未加引号时原样返回。"""
+    """还原 git C 风格转义的路径：按字节收集后 UTF-8 解码（\303\251 → é），未加引号时原样返回。"""
     if len(path) < 2 or not path.startswith('"') or not path.endswith('"'):
         return path
     body = path[1:-1]
-    out = []
+    out = bytearray()
     i = 0
     escapes = {
         '"': '"', '\\': '\\', 'a': '\a', 'b': '\b', 't': '\t',
@@ -191,21 +191,31 @@ def _unquote_git_path(path: str) -> str:
         if ch == '\\' and i + 1 < len(body):
             nxt = body[i + 1]
             if nxt in escapes:
-                out.append(escapes[nxt])
+                out.extend(escapes[nxt].encode("utf-8"))
                 i += 2
             elif nxt in "01234567":
                 j = i + 1
                 while j < len(body) and j < i + 4 and body[j] in "01234567":
                     j += 1
-                out.append(chr(int(body[i + 1:j], 8)))
+                out.append(int(body[i + 1:j], 8))
                 i = j
             else:
-                out.append(nxt)
+                out.extend(nxt.encode("utf-8"))
                 i += 2
         else:
-            out.append(ch)
+            out.extend(ch.encode("utf-8"))
             i += 1
-    return ''.join(out)
+    return out.decode("utf-8", errors="replace")
+
+
+def _rename_target(path: str) -> str:
+    """重命名路径取新侧：兼容 `{old => new}` 分组形式与 `old => new` 全路径形式。"""
+    m = re.search(r"\{([^{}]*?) => ([^{}]*?)\}", path)
+    if m:
+        return path[:m.start()] + m.group(2) + path[m.end():]
+    if " => " in path:
+        return path.split(" => ", 1)[1]
+    return path
 
 
 def _extract_pr_number(message: Optional[str]) -> Optional[int]:
