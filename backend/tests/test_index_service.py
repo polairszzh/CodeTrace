@@ -435,8 +435,9 @@ def test_github_token_auth_env(monkeypatch):
     url = "https://github.com/owner/repo.git"
     env = git_service._git_auth_env(url)
     assert env is not None
-    assert env["GIT_CONFIG_COUNT"] == "1"
-    assert env["GIT_CONFIG_KEY_0"] == "http.extraHeader"
+    assert env["GIT_CONFIG_COUNT"] == "2"
+    assert env["GIT_CONFIG_KEY_0"] == "http.https://github.com/.extraHeader"
+    assert env["GIT_CONFIG_KEY_1"] == "http.https://www.github.com/.extraHeader"
     assert env["GIT_CONFIG_VALUE_0"].startswith("Authorization: Basic ")
     # 进程参数里不出现认证头
     args = git_service._git_net_args(["ls-remote", url, "HEAD"])
@@ -462,8 +463,9 @@ def test_git_auth_env_preserves_existing_config(monkeypatch):
     monkeypatch.setenv("GIT_CONFIG_KEY_0", "user.name")
     monkeypatch.setenv("GIT_CONFIG_VALUE_0", "someone")
     env = git_service._git_auth_env("https://github.com/o/r.git")
-    assert env["GIT_CONFIG_COUNT"] == "2"
-    assert env["GIT_CONFIG_KEY_1"] == "http.extraHeader"  # 新增键从已有 count 起排
+    assert env["GIT_CONFIG_COUNT"] == "3"
+    assert env["GIT_CONFIG_KEY_1"] == "http.https://github.com/.extraHeader"
+    assert env["GIT_CONFIG_KEY_2"] == "http.https://www.github.com/.extraHeader"
     assert env["GIT_CONFIG_VALUE_1"].startswith("Authorization: Basic ")
     assert "GIT_CONFIG_KEY_0" not in env  # 原有键由调用方 {**os.environ, **delta} 保留
 
@@ -473,8 +475,8 @@ def test_git_auth_env_invalid_config_count(monkeypatch):
     monkeypatch.setenv("GITHUB_TOKEN", "tok123")
     monkeypatch.setenv("GIT_CONFIG_COUNT", "abc")
     env = git_service._git_auth_env("https://github.com/o/r.git")
-    assert env["GIT_CONFIG_COUNT"] == "1"
-    assert env["GIT_CONFIG_KEY_0"] == "http.extraHeader"
+    assert env["GIT_CONFIG_COUNT"] == "2"
+    assert env["GIT_CONFIG_KEY_0"] == "http.https://github.com/.extraHeader"
 
 
 def test_repo_size_cached(monkeypatch):

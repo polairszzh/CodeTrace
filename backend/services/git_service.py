@@ -121,10 +121,13 @@ def _git_auth_env(repo_url: str | None) -> dict[str, str] | None:
             base_count = int(os.environ.get("GIT_CONFIG_COUNT", "0") or "0")
         except ValueError:
             base_count = 0  # 非数字配置视为无，避免中断
+        # URL 作用域配置：只对 github.com 请求带认证头，防跨主机（如 submodule）泄露
         return {
-            "GIT_CONFIG_COUNT": str(base_count + 1),
-            f"GIT_CONFIG_KEY_{base_count}": "http.extraHeader",
+            "GIT_CONFIG_COUNT": str(base_count + 2),
+            f"GIT_CONFIG_KEY_{base_count}": "http.https://github.com/.extraHeader",
             f"GIT_CONFIG_VALUE_{base_count}": auth,
+            f"GIT_CONFIG_KEY_{base_count + 1}": "http.https://www.github.com/.extraHeader",
+            f"GIT_CONFIG_VALUE_{base_count + 1}": auth,
         }
     return None
 
@@ -173,10 +176,12 @@ def _run_git_with_proxy_fallback(
     first_timed_out = False
     for idx, (cmd, use_auth) in enumerate(attempts):
         env = {**os.environ, **auth_env} if use_auth else None
+        # 后续轮次递减超时，避免网络完全不通时等待翻倍到 4×timeout
+        cur_timeout = timeout if idx == 0 else max(5, timeout // 2)
         try:
             r = subprocess.run(
                 cmd, cwd=cwd, env=env, capture_output=True, text=True, encoding="utf-8",
-                timeout=timeout,
+                timeout=cur_timeout,
             )
             if r.returncode == 0:
                 return r
