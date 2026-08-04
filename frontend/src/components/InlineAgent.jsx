@@ -60,6 +60,9 @@ export default function InlineAgent({ context, onClose }) {
       if (!mountedRef.current) return
       const total = pendingRef.current.length
       if (shownRef.current >= total) {
+        // 追上已接收内容：暂停计时器，下一个 report 到达时重启
+        clearInterval(timerRef.current)
+        timerRef.current = null
         return
       }
       // 按 Unicode code point 推进，避免 emoji/代理对半个字符闪烁
@@ -113,7 +116,7 @@ export default function InlineAgent({ context, onClose }) {
       let buffer = ''
       let firstChunk = true
 
-      while (true) {
+      while (requestIdRef.current === requestId) {
         const { done, value } = await reader.read()
         if (done) break
         if (!mountedRef.current) break
