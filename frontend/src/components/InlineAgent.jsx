@@ -89,6 +89,7 @@ export default function InlineAgent({ context, onClose }) {
     // 添加问题到对话
     setHistory(p => [...p, { q: question, a: '', id: Date.now() }])
 
+    let accumulated = ''
     try {
       const res = await fetch('/api/agent/ask', {
         method: 'POST',
@@ -127,6 +128,7 @@ export default function InlineAgent({ context, onClose }) {
             const ev = JSON.parse(payload)
             if (ev.type === 'report') {
               pendingRef.current += ev.content
+              accumulated += ev.content
               setStreamStatus('')
               startTypewriter()
               if (firstChunk) {
@@ -156,13 +158,23 @@ export default function InlineAgent({ context, onClose }) {
         setHistory(p => {
           const h = [...p]
           const last = { ...h[h.length - 1] }
-          last.a = pendingRef.current
+          last.a = accumulated
           h[h.length - 1] = last
           return h
         })
       }
     } catch (e) {
       stopTypewriter()
+      // 出错/中断（如中途追问）时把已接收内容写入历史，避免内容丢失与假 loading
+      if (mountedRef.current && accumulated) {
+        setHistory(p => {
+          const h = [...p]
+          const last = { ...h[h.length - 1] }
+          last.a = accumulated
+          h[h.length - 1] = last
+          return h
+        })
+      }
       if (e.name !== 'AbortError' && mountedRef.current) setError(e.message)
     } finally {
       if (mountedRef.current) {
@@ -252,7 +264,7 @@ export default function InlineAgent({ context, onClose }) {
           {history.map((item, i) => {
             const isLast = i === history.length - 1
             const streaming = isLast && typing && !initialLoading
-            const waiting = isLast && item.a === '' && !typing
+            const waiting = isLast && item.a === '' && !typing && !error
             // 首次加载时全屏 spinner 覆盖，不显示 inline spinner
             if (isLast && initialLoading) return null
             return (
