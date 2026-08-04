@@ -538,7 +538,7 @@ def test_index_status_sse_endpoint(local_repo, monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from routers.trace import router
+    from routers.repo import router
 
     # 让 URL → 路径推导指向本地测试仓库
     monkeypatch.setattr(git_runner, "CACHE_DIR", local_repo.parent)
@@ -585,7 +585,7 @@ def test_index_status_sse_not_cloned(tmp_path, monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from routers.trace import router
+    from routers.repo import router
 
     monkeypatch.setattr(git_runner, "CACHE_DIR", tmp_path / "no_such_cache")
     app = FastAPI()
@@ -606,7 +606,7 @@ def test_index_status_sse_not_started(local_repo, monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from routers.trace import router
+    from routers.repo import router
 
     monkeypatch.setattr(git_runner, "CACHE_DIR", local_repo.parent)
     # 按新命名规则创建仓库目录（URL → host_owner_repo）
