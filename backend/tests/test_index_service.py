@@ -371,6 +371,7 @@ def test_legacy_cache_migration(tmp_path, monkeypatch):
 def test_remote_head_proxy_fallback(monkeypatch):
     """git 网络命令：配置代理失败后自动清空代理直连重试。"""
     monkeypatch.delenv("CODETRACE_GIT_PROXY", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     calls = []
 
     class FakeResult:
@@ -465,6 +466,15 @@ def test_git_auth_env_preserves_existing_config(monkeypatch):
     assert env["GIT_CONFIG_KEY_1"] == "http.extraHeader"  # 新增键从已有 count 起排
     assert env["GIT_CONFIG_VALUE_1"].startswith("Authorization: Basic ")
     assert "GIT_CONFIG_KEY_0" not in env  # 原有键由调用方 {**os.environ, **delta} 保留
+
+
+def test_git_auth_env_invalid_config_count(monkeypatch):
+    """GIT_CONFIG_COUNT 非数字时按 0 处理，不中断。"""
+    monkeypatch.setenv("GITHUB_TOKEN", "tok123")
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "abc")
+    env = git_service._git_auth_env("https://github.com/o/r.git")
+    assert env["GIT_CONFIG_COUNT"] == "1"
+    assert env["GIT_CONFIG_KEY_0"] == "http.extraHeader"
 
 
 def test_repo_size_cached(monkeypatch):
