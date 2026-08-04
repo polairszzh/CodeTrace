@@ -25,16 +25,18 @@ async def agent_analyze(req: TraceRequest, goal: str = ""):
 
     planner = AgentPlanner(registry)
 
-    def generate():
+    async def generate():
         yield "data: " + json.dumps({"step": 0, "status": "Agent 正在准备，首次分析需要 clone 仓库..."}, ensure_ascii=False) + "\n\n"
         try:
-            clone_or_pull_repo(req.repo_url)
+            await asyncio.to_thread(clone_or_pull_repo, req.repo_url)
         except Exception as e:
             yield "data: " + json.dumps({"step": 0, "error": f"仓库操作失败: {str(e)}"}, ensure_ascii=False) + "\n\n"
             yield "data: [DONE]\n\n"
             return
         try:
-            steps = planner.run(goal + f'\n仓库地址: {req.repo_url}', max_steps=20)
+            steps = await asyncio.to_thread(
+                planner.run, goal + f'\n仓库地址: {req.repo_url}', max_steps=20
+            )
             for step in steps:
                 yield f'data: {json.dumps(step, ensure_ascii=False)}\n\n'
         except Exception as e:
