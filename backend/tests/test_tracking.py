@@ -323,6 +323,7 @@ def test_request_tracking_background(tmp_path, monkeypatch):
     tracking_service._TRACKING_THREADS.clear()
     repo = _make_repo(tmp_path, [("feat: init (#1)", 5)])
     assert tracking_service.request_tracking(repo) is True
+    assert tracking_service.tracking_thread_alive(repo) is True
 
     deadline = time.time() + 20
     while time.time() < deadline:
@@ -332,6 +333,14 @@ def test_request_tracking_background(tmp_path, monkeypatch):
         time.sleep(0.2)
     assert data.get("latest_report") is not None
     assert data["stale"] is False
+
+
+def test_tracking_thread_alive_false_when_idle(tmp_path, monkeypatch):
+    """无后台线程时 tracking_thread_alive 返回 False（端点据此识别启动失败）。"""
+    monkeypatch.setenv("CODETRACE_INDEX_DIR", str(tmp_path / "index"))
+    tracking_service._TRACKING_THREADS.clear()
+    repo = _make_repo(tmp_path, [("feat: init (#1)", 5)])
+    assert tracking_service.tracking_thread_alive(repo) is False
 
 
 def test_get_tracking_stale_flag(tmp_path, monkeypatch):

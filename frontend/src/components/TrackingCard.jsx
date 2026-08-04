@@ -52,6 +52,8 @@ function TrackingCard({ repoUrl }) {
 
   useEffect(() => {
     repoRef.current = repoUrl
+    setData(null)  // 切换仓库立即清空旧数据，避免短暂展示上一个仓库的报告
+    setError('')
     if (repoUrl) load()
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current)

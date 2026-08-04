@@ -462,6 +462,16 @@ def request_tracking(repo_path) -> bool:
         return False
 
 
+def tracking_thread_alive(repo_path) -> bool:
+    """后台追踪线程是否在运行（端点据此区分"运行中"与"启动失败"）。"""
+    try:
+        with _TRACKING_THREADS_LOCK:
+            t = _TRACKING_THREADS.get(Path(repo_path).name)
+            return bool(t and t.is_alive())
+    except Exception:
+        return False
+
+
 def _within_backoff(at: Optional[str]) -> bool:
     if not at:
         return False
