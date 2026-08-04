@@ -157,8 +157,8 @@ export default function InlineAgent({ context, onClose }) {
       }
 
       // 最终写入完整内容
-      flushTypewriter()
       if (mountedRef.current && requestIdRef.current === requestId) {
+        flushTypewriter()
         setHistory(p => {
           const h = [...p]
           const last = { ...h[h.length - 1] }
@@ -168,7 +168,8 @@ export default function InlineAgent({ context, onClose }) {
         })
       }
     } catch (e) {
-      stopTypewriter()
+      // 仅当前请求可停表：被 abort 的旧请求不得误清新请求的定时器
+      if (requestIdRef.current === requestId) stopTypewriter()
       // 出错/中断（如中途追问）时把已接收内容写入历史，避免内容丢失与假 loading
       if (mountedRef.current && requestIdRef.current === requestId && accumulated) {
         setHistory(p => {
