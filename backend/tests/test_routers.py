@@ -104,10 +104,10 @@ def test_repo_tracking(repo_env):
 
 def test_repo_pr_info(repo_env, monkeypatch):
     from main import app
-    from routers import trace as trace_module
+    from routers import repo as repo_module
 
     monkeypatch.setattr(
-        trace_module.github, "get_pr_info",
+        repo_module.github, "get_pr_info",
         lambda repo_full, pr_number: {"title": "t", "state": "open", "author": "x"},
     )
     r = TestClient(app).get("/api/repo/pr-info", params={"repo_url": URL, "pr_number": 1})

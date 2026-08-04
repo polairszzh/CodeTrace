@@ -73,7 +73,7 @@ def test_run_agent_no_llm_fallback():
 
 def test_graph_analyze_api():
     """测试 /api/graph/analyze 路由存在并能响应"""
-    from routers.trace import router
+    from routers.agent import router
 
     route = None
     for r in router.routes:

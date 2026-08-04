@@ -7,6 +7,8 @@ load_dotenv()
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from routers.agent import router as agent_router
+from routers.repo import router as repo_router
 from routers.trace import router as trace_router
 
 app = FastAPI(title="CodeTrace", version="1.0.0")
@@ -35,6 +37,8 @@ app.add_middleware(
 )
 
 app.include_router(trace_router, prefix="/api", tags=["Trace"])
+app.include_router(repo_router, prefix="/api", tags=["Repo"])
+app.include_router(agent_router, prefix="/api", tags=["Agent"])
 
 
 if __name__ == "__main__":
