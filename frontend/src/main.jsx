@@ -13,7 +13,10 @@ if (apiKey) {
     const apiPrefixes = apiBase.startsWith('http')
       ? [apiBase]
       : [apiBase, window.location.origin + apiBase]
-    if (!apiPrefixes.some((p) => url.startsWith(p))) return originalFetch(input, init)
+    // 精确匹配基址或基址下的子路径，避免 /apiary、/apix 等误判注入 key
+    if (!apiPrefixes.some((p) => url === p || url.startsWith(p + '/'))) {
+      return originalFetch(input, init)
+    }
     const headers = new Headers(init.headers)
     if (input instanceof Request) {
       input.headers.forEach((value, key) => headers.set(key, value))
