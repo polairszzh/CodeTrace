@@ -7,6 +7,11 @@ import App from './App.jsx'
 const apiKey = import.meta.env.VITE_CODETRACE_API_KEY
 const apiBase = import.meta.env.VITE_CODETRACE_API_BASE || '/api'
 if (apiKey) {
+  // 基址统一解析为 origin + path（补尾斜杠），相对/绝对配置走同一套匹配
+  const apiBaseUrl = new URL(apiBase, window.location.origin)
+  const apiBasePath = apiBaseUrl.pathname.endsWith('/')
+    ? apiBaseUrl.pathname
+    : apiBaseUrl.pathname + '/'
   const originalFetch = window.fetch
   window.fetch = (input, init) => {
     const reqInit = init ?? {}
@@ -15,7 +20,7 @@ if (apiKey) {
       : input instanceof URL
         ? input.href
         : input?.url ?? ''
-    // 解析 URL 后按 pathname 匹配基址，忽略查询参数/哈希；
+    // 解析 URL 后校验「同源 + pathname 前缀」，忽略查询参数/哈希；
     // 精确匹配基址或基址下的子路径，避免 /apiary、/apix 等误判注入 key
     const isApiRequest = (raw) => {
       if (!raw) return false
@@ -25,11 +30,8 @@ if (apiKey) {
       } catch {
         return false
       }
-      if (apiBase.startsWith('http')) {
-        const absolute = parsed.origin + parsed.pathname
-        return absolute === apiBase || absolute.startsWith(apiBase + '/')
-      }
-      return parsed.pathname === apiBase || parsed.pathname.startsWith(apiBase + '/')
+      if (parsed.origin !== apiBaseUrl.origin) return false
+      return parsed.pathname === apiBasePath.slice(0, -1) || parsed.pathname.startsWith(apiBasePath)
     }
     if (!isApiRequest(rawUrl)) {
       return originalFetch(input, reqInit)
