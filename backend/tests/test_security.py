@@ -2,7 +2,7 @@
 
 import os
 
-from fastapi import Depends, FastAPI
+from fastapi import FastAPI, Security
 from fastapi.testclient import TestClient
 
 
@@ -97,7 +97,7 @@ def test_api_key_dependency_enforced_when_configured(monkeypatch):
     monkeypatch.setattr(main, "_API_KEY", "secret-123")
     app = FastAPI()
 
-    @app.get("/api/ping", dependencies=[Depends(main.require_api_key)])
+    @app.get("/api/ping", dependencies=[Security(main.require_api_key)])
     def ping():
         return {"ok": True}
 
@@ -114,7 +114,7 @@ def test_api_key_dependency_open_when_not_configured(monkeypatch):
     monkeypatch.setattr(main, "_API_KEY", "")
     app = FastAPI()
 
-    @app.get("/api/ping", dependencies=[Depends(main.require_api_key)])
+    @app.get("/api/ping", dependencies=[Security(main.require_api_key)])
     def ping():
         return {"ok": True}
 

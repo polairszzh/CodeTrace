@@ -5,8 +5,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import FastAPI, HTTPException, Security
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import APIKeyHeader
 
 from routers.agent import router as agent_router
 from routers.repo import router as repo_router
@@ -52,7 +53,10 @@ def _api_key_valid(configured: str, provided: str | None) -> bool:
 _API_KEY = _api_key_config(os.getenv("CODETRACE_API_KEY", ""))[1]
 
 
-def require_api_key(x_api_key: str | None = Header(default=None)):
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+def require_api_key(x_api_key: str | None = Security(api_key_header)):
     """
     统一鉴权依赖：配置了 CODETRACE_API_KEY 时，所有 /api 接口要求请求头
     X-API-Key 与配置值一致；未配置时放行（本地开发）。
@@ -70,13 +74,13 @@ app.add_middleware(
 )
 
 app.include_router(
-    trace_router, prefix="/api", tags=["Trace"], dependencies=[Depends(require_api_key)]
+    trace_router, prefix="/api", tags=["Trace"], dependencies=[Security(require_api_key)]
 )
 app.include_router(
-    repo_router, prefix="/api", tags=["Repo"], dependencies=[Depends(require_api_key)]
+    repo_router, prefix="/api", tags=["Repo"], dependencies=[Security(require_api_key)]
 )
 app.include_router(
-    agent_router, prefix="/api", tags=["Agent"], dependencies=[Depends(require_api_key)]
+    agent_router, prefix="/api", tags=["Agent"], dependencies=[Security(require_api_key)]
 )
 
 
