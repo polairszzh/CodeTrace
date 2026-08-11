@@ -17,6 +17,7 @@ export default function InlineAgent({ context, onClose }) {
   const controllerRef = useRef(null)
   const mountedRef = useRef(true)
   const requestIdRef = useRef(0)
+  const entryIdRef = useRef(0)
 
   useEffect(() => {
     if (contentRef.current) {
@@ -59,8 +60,10 @@ export default function InlineAgent({ context, onClose }) {
       clearInterval(timerRef.current)
       timerRef.current = null
     }
-    timerRef.current = setInterval(() => {
-      if (!mountedRef.current) return
+    const timer = setInterval(() => {
+      // 回调捕获本次定时器引用：被 stop/重启后残留的旧回调直接退出，
+      // 避免误清后续请求新建的定时器
+      if (!mountedRef.current || timerRef.current !== timer) return
       const t = pendingRef.current.length
       if (shownRef.current >= t) {
         clearInterval(timerRef.current)
@@ -76,6 +79,7 @@ export default function InlineAgent({ context, onClose }) {
       }
       setVisibleText(pendingRef.current.slice(0, shownRef.current))
     }, 8)
+    timerRef.current = timer
   }
 
   const startTypewriter = () => {
@@ -83,8 +87,10 @@ export default function InlineAgent({ context, onClose }) {
     if (mountedRef.current) setTyping(true)
     // 打字机：每 20ms 显示两个字符；追上已接收内容时保持等待，
     // 后续 report 块继续追加，流结束才 flush
-    timerRef.current = setInterval(() => {
-      if (!mountedRef.current) return
+    const timer = setInterval(() => {
+      // 回调捕获本次定时器引用：旧回调（已被清掉重启的）一律退出，
+      // 避免误清新请求的定时器
+      if (!mountedRef.current || timerRef.current !== timer) return
       const total = pendingRef.current.length
       if (shownRef.current >= total) {
         // 追上已接收内容：暂停计时器，下一个 report 到达时重启
@@ -101,6 +107,7 @@ export default function InlineAgent({ context, onClose }) {
       }
       setVisibleText(pendingRef.current.slice(0, shownRef.current))
     }, 20)
+    timerRef.current = timer
   }
 
   const runAnalysis = async (question) => {
@@ -119,8 +126,8 @@ export default function InlineAgent({ context, onClose }) {
     setVisibleText('')
     stopTypewriter()
 
-    // 添加问题到对话
-    const entryId = Date.now()
+    // 添加问题到对话：用递增 id 避免 Date.now() 同毫秒连点碰撞覆盖条目
+    const entryId = ++entryIdRef.current
     setHistory(p => [...p, { q: question, a: '', id: entryId }])
 
     let accumulated = ''
