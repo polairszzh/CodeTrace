@@ -158,3 +158,14 @@ def test_real_app_openapi_declares_api_key_security():
             ), (
                 f"{method.upper()} {path} 缺少 API Key 安全要求"
             )
+
+
+def test_healthz_public_without_api_key(monkeypatch):
+    """配置 API Key 后 /healthz 仍免鉴权（容器健康检查可用）。"""
+    import main
+
+    monkeypatch.setattr(main, "_API_KEY", "secret-123")
+    client = TestClient(main.app)
+    resp = client.get("/healthz")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}

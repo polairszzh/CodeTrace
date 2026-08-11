@@ -9,19 +9,33 @@ services:
       - LLM_API_KEY=${LLM_API_KEY}
       - LLM_BASE_URL=${LLM_BASE_URL:-https://api.deepseek.com/v1}
       - LLM_MODEL=${LLM_MODEL:-deepseek-v4-pro}
+      - CODETRACE_API_KEY=${CODETRACE_API_KEY:-}
+      - CODETRACE_CORS_ORIGINS=${CODETRACE_CORS_ORIGINS:-}
+      # 容器内必须监听 0.0.0.0 供 nginx 代理；对外仅暴露 frontend 端口
+      - CODETRACE_HOST=0.0.0.0
     volumes:
       - codetrace_cache:/tmp/codetrace
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
   frontend:
     build:
       context: .
       dockerfile: Dockerfile.frontend
+      args:
+        VITE_CODETRACE_API_KEY: ${VITE_CODETRACE_API_KEY:-}
+        VITE_CODETRACE_API_BASE: ${VITE_CODETRACE_API_BASE:-/api}
     container_name: codetrace-frontend
     ports:
       - "${PORT:-8000}:80"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
