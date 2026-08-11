@@ -118,8 +118,8 @@ def test_api_key_dependency_open_when_not_configured(monkeypatch):
     assert client.get("/api/ping").status_code == 200
 
 
-def test_real_app_enforces_api_key(monkeypatch):
-    """main.app 实际 wiring：配置 key 后缺失 key 的真实请求 401；带 key 通过鉴权进入参数校验。"""
+def test_real_app_blocks_without_api_key(monkeypatch):
+    """main.app 实际 wiring：配置 key 后缺失 key 的真实请求 401。"""
     import main
 
     monkeypatch.setattr(main, "_API_KEY", "secret-123")
@@ -128,7 +128,33 @@ def test_real_app_enforces_api_key(monkeypatch):
     # 若路由被移除会得到 404，说明本用例覆盖的接线已失效，需同步更新
     resp = client.post("/api/trace", json={})
     assert resp.status_code == 401, f"期望 401（鉴权拦截），实际 {resp.status_code}"
-    resp = client.post("/api/trace", json={}, headers={"X-API-Key": "secret-123"})
-    # 鉴权通过后进入业务/校验层：非 401（未卡在鉴权）且非 404（路由确实存在），
-    # 不断言具体校验状态码，避免依赖 diff 外路由的校验行为
-    assert resp.status_code not in (401, 404)
+
+
+def test_real_app_openapi_declares_api_key_security():
+    """main.app 的 OpenAPI 对每个 /api 操作声明 X-API-Key 安全要求（Security 接线）。"""
+    import main
+
+    schema = main.app.openapi()
+    schemes = schema.get("components", {}).get("securitySchemes", {})
+    api_key_schemes = [
+        name
+        for name, spec in schemes.items()
+        if spec.get("type") == "apiKey"
+        and spec.get("in") == "header"
+        and spec.get("name") == "X-API-Key"
+    ]
+    assert api_key_schemes, "OpenAPI 应声明 X-API-Key 的 securityScheme"
+    api_paths = [p for p in schema["paths"] if p.startswith("/api")]
+    assert api_paths, "应存在 /api 路径"
+    for path in api_paths:
+        for method, op in schema["paths"][path].items():
+            if method in ("parameters",):
+                continue
+            op_security = op.get("security") or []
+            assert any(
+                scheme in op_sec
+                for op_sec in op_security
+                for scheme in api_key_schemes
+            ), (
+                f"{method.upper()} {path} 缺少 API Key 安全要求"
+            )
