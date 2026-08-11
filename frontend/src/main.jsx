@@ -10,21 +10,37 @@ if (apiKey) {
   const originalFetch = window.fetch
   window.fetch = (input, init) => {
     const reqInit = init ?? {}
-    const url = typeof input === 'string'
+    const rawUrl = typeof input === 'string'
       ? input
       : input instanceof URL
         ? input.href
         : input?.url ?? ''
-    const apiPrefixes = apiBase.startsWith('http')
-      ? [apiBase]
-      : [apiBase, window.location.origin + apiBase]
+    // 解析 URL 后按 pathname 匹配基址，忽略查询参数/哈希；
     // 精确匹配基址或基址下的子路径，避免 /apiary、/apix 等误判注入 key
-    if (!apiPrefixes.some((p) => url === p || url.startsWith(p + '/'))) {
+    const isApiRequest = (raw) => {
+      if (!raw) return false
+      let parsed
+      try {
+        parsed = new URL(raw, window.location.origin)
+      } catch {
+        return false
+      }
+      if (apiBase.startsWith('http')) {
+        const absolute = parsed.origin + parsed.pathname
+        return absolute === apiBase || absolute.startsWith(apiBase + '/')
+      }
+      return parsed.pathname === apiBase || parsed.pathname.startsWith(apiBase + '/')
+    }
+    if (!isApiRequest(rawUrl)) {
       return originalFetch(input, reqInit)
     }
-    const headers = new Headers(reqInit.headers)
+    // 先复制 input.headers，再应用 init.headers（与 fetch 标准一致：init 优先）
+    const headers = new Headers()
     if (input instanceof Request) {
       input.headers.forEach((value, key) => headers.set(key, value))
+    }
+    if (reqInit.headers) {
+      new Headers(reqInit.headers).forEach((value, key) => headers.set(key, value))
     }
     headers.set('X-API-Key', apiKey)
     return originalFetch(input, { ...reqInit, headers })
