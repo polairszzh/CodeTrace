@@ -72,8 +72,14 @@ if (apiKey) {
         new Headers(reqInit.headers).forEach((value, key) => headers.set(key, value))
       }
       headers.set('X-API-Key', apiKey)
-      if (crossOrigin && (typeof input === 'string' || input instanceof URL)) {
-        return originalFetch(resolveApiUrl(rawUrl), { ...reqInit, headers })
+      if (crossOrigin) {
+        if (typeof input === 'string' || input instanceof URL) {
+          return originalFetch(resolveApiUrl(rawUrl), { ...reqInit, headers })
+        }
+        if (input instanceof Request) {
+          // 复制原 Request 到改写后的地址（method/headers/body 一并带过去）
+          return originalFetch(new Request(resolveApiUrl(rawUrl), input), { ...reqInit, headers })
+        }
       }
       return originalFetch(input, { ...reqInit, headers })
     }
