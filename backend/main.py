@@ -45,10 +45,11 @@ def _api_key_valid(configured: str, provided: str | None) -> bool:
         return True
     if not provided:
         return False
-    return hmac.compare_digest(configured, provided)
+    # 先转 bytes 再比较：compare_digest 对含非 ASCII 的 str 会抛 TypeError
+    return hmac.compare_digest(configured.encode("utf-8"), provided.encode("utf-8"))
 
 
-_API_KEY_ENABLED, _API_KEY = _api_key_config(os.getenv("CODETRACE_API_KEY", ""))
+_API_KEY = _api_key_config(os.getenv("CODETRACE_API_KEY", ""))[1]
 
 
 def require_api_key(x_api_key: str | None = Header(default=None)):

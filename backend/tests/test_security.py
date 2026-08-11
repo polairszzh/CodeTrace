@@ -82,6 +82,14 @@ def test_api_key_valid_rejects_missing_and_wrong():
     assert _api_key_valid("secret-123", "secret-123") is True
 
 
+def test_api_key_valid_non_ascii_header_does_not_raise():
+    """非 ASCII 的 X-API-Key 不应抛 TypeError（返回拒绝而非 500）。"""
+    from main import _api_key_valid
+
+    assert _api_key_valid("secret-123", "é") is False
+    assert _api_key_valid("é", "é") is True
+
+
 def test_api_key_dependency_enforced_when_configured(monkeypatch):
     """配置 key 后，缺头/错头 401，正确头 200。"""
     import main
