@@ -33,7 +33,8 @@ if (apiKey) {
     const resolveApiUrl = (raw) => {
       const parsed = new URL(raw, window.location.href)
       const suffix = parsed.pathname === basePath ? '' : parsed.pathname.slice(basePath.length)
-      return apiOrigin + basePath + suffix + parsed.search + parsed.hash
+      // fetch 不会发送 fragment，无需保留 hash
+      return apiOrigin + basePath + suffix + parsed.search
     }
     window.fetch = (input, init) => {
       const reqInit = init ?? {}

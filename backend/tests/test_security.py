@@ -49,18 +49,14 @@ def test_api_key_config_empty_disables_auth():
     """未配置 CODETRACE_API_KEY 时鉴权关闭。"""
     from main import _api_key_config
 
-    enabled, key = _api_key_config("")
-    assert enabled is False
-    assert key == ""
+    assert _api_key_config("") == ""
 
 
 def test_api_key_config_configured_enables_auth():
     """配置后启用鉴权，且去除首尾空白。"""
     from main import _api_key_config
 
-    enabled, key = _api_key_config("  secret-123  ")
-    assert enabled is True
-    assert key == "secret-123"
+    assert _api_key_config("  secret-123  ") == "secret-123"
 
 
 def test_api_key_valid_never_configured_allows_all():

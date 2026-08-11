@@ -31,13 +31,12 @@ def _cors_settings(env_value: str) -> tuple[list[str], bool]:
 _cors_origins, _cors_credentials = _cors_settings(os.getenv("CODETRACE_CORS_ORIGINS", ""))
 
 
-def _api_key_config(env_value: str) -> tuple[bool, str]:
+def _api_key_config(env_value: str) -> str:
     """
     API Key 配置（纯函数，便于测试）：
-    未配置（空值）时鉴权关闭，本地开发不受影响；部署时设置 CODETRACE_API_KEY 即启用。
+    去除首尾空白；空值表示未配置（鉴权关闭），非空即启用。
     """
-    key = env_value.strip()
-    return bool(key), key
+    return env_value.strip()
 
 
 def _api_key_valid(configured: str, provided: str | None) -> bool:
@@ -50,7 +49,7 @@ def _api_key_valid(configured: str, provided: str | None) -> bool:
     return hmac.compare_digest(configured.encode("utf-8"), provided.encode("utf-8"))
 
 
-_API_KEY = _api_key_config(os.getenv("CODETRACE_API_KEY", ""))[1]
+_API_KEY = _api_key_config(os.getenv("CODETRACE_API_KEY", ""))
 
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
