@@ -25,7 +25,16 @@ if (apiKey) {
       console.warn('[CodeTrace] VITE_CODETRACE_API_BASE 为根路径，已跳过请求头注入')
     }
   } else {
+    const apiOrigin = apiBaseUrl.origin
+    const basePath = apiBasePath.slice(0, -1)
+    const crossOrigin = apiOrigin !== window.location.origin
     const originalFetch = window.fetch
+    // 跨域配置：把相对 /api 请求改写为基址（保留 pathname 后缀与查询/哈希）
+    const resolveApiUrl = (raw) => {
+      const parsed = new URL(raw, window.location.href)
+      const suffix = parsed.pathname === basePath ? '' : parsed.pathname.slice(basePath.length)
+      return apiOrigin + basePath + suffix + parsed.search + parsed.hash
+    }
     window.fetch = (input, init) => {
       const reqInit = init ?? {}
       const rawUrl = typeof input === 'string'
@@ -43,8 +52,13 @@ if (apiKey) {
         } catch {
           return false
         }
-        if (parsed.origin !== apiBaseUrl.origin) return false
-        return parsed.pathname === apiBasePath.slice(0, -1) || parsed.pathname.startsWith(apiBasePath)
+        const pathMatches = parsed.pathname === basePath || parsed.pathname.startsWith(apiBasePath)
+        if (!pathMatches) return false
+        // 同源配置：仅接受基址所在源的请求；跨域配置：相对路径请求视为 API 请求（会改写为基址）
+        if (parsed.origin !== apiOrigin) {
+          return crossOrigin && parsed.origin === window.location.origin
+        }
+        return true
       }
       if (!isApiRequest(rawUrl)) {
         return originalFetch(input, reqInit)
@@ -58,6 +72,9 @@ if (apiKey) {
         new Headers(reqInit.headers).forEach((value, key) => headers.set(key, value))
       }
       headers.set('X-API-Key', apiKey)
+      if (crossOrigin && (typeof input === 'string' || input instanceof URL)) {
+        return originalFetch(resolveApiUrl(rawUrl), { ...reqInit, headers })
+      }
       return originalFetch(input, { ...reqInit, headers })
     }
   }
