@@ -8,21 +8,26 @@ const apiKey = import.meta.env.VITE_CODETRACE_API_KEY
 const apiBase = import.meta.env.VITE_CODETRACE_API_BASE || '/api'
 if (apiKey) {
   const originalFetch = window.fetch
-  window.fetch = (input, init = {}) => {
-    const url = typeof input === 'string' ? input : input.url
+  window.fetch = (input, init) => {
+    const reqInit = init ?? {}
+    const url = typeof input === 'string'
+      ? input
+      : input instanceof URL
+        ? input.href
+        : input?.url ?? ''
     const apiPrefixes = apiBase.startsWith('http')
       ? [apiBase]
       : [apiBase, window.location.origin + apiBase]
     // 精确匹配基址或基址下的子路径，避免 /apiary、/apix 等误判注入 key
     if (!apiPrefixes.some((p) => url === p || url.startsWith(p + '/'))) {
-      return originalFetch(input, init)
+      return originalFetch(input, reqInit)
     }
-    const headers = new Headers(init.headers)
+    const headers = new Headers(reqInit.headers)
     if (input instanceof Request) {
       input.headers.forEach((value, key) => headers.set(key, value))
     }
     headers.set('X-API-Key', apiKey)
-    return originalFetch(input, { ...init, headers })
+    return originalFetch(input, { ...reqInit, headers })
   }
 }
 
