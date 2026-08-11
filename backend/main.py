@@ -1,10 +1,11 @@
+import hmac
 import os
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from routers.agent import router as agent_router
@@ -28,6 +29,37 @@ def _cors_settings(env_value: str) -> tuple[list[str], bool]:
 
 _cors_origins, _cors_credentials = _cors_settings(os.getenv("CODETRACE_CORS_ORIGINS", ""))
 
+
+def _api_key_config(env_value: str) -> tuple[bool, str]:
+    """
+    API Key 配置（纯函数，便于测试）：
+    未配置（空值）时鉴权关闭，本地开发不受影响；部署时设置 CODETRACE_API_KEY 即启用。
+    """
+    key = env_value.strip()
+    return bool(key), key
+
+
+def _api_key_valid(configured: str, provided: str | None) -> bool:
+    """校验请求头 X-API-Key；常量时间比较，防时序侧信道。"""
+    if not configured:
+        return True
+    if not provided:
+        return False
+    return hmac.compare_digest(configured, provided)
+
+
+_API_KEY_ENABLED, _API_KEY = _api_key_config(os.getenv("CODETRACE_API_KEY", ""))
+
+
+def require_api_key(x_api_key: str | None = Header(default=None)):
+    """
+    统一鉴权依赖：配置了 CODETRACE_API_KEY 时，所有 /api 接口要求请求头
+    X-API-Key 与配置值一致；未配置时放行（本地开发）。
+    """
+    if not _api_key_valid(_API_KEY, x_api_key):
+        raise HTTPException(status_code=401, detail="无效或缺失的 API Key")
+    return None
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
@@ -36,9 +68,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(trace_router, prefix="/api", tags=["Trace"])
-app.include_router(repo_router, prefix="/api", tags=["Repo"])
-app.include_router(agent_router, prefix="/api", tags=["Agent"])
+app.include_router(
+    trace_router, prefix="/api", tags=["Trace"], dependencies=[Depends(require_api_key)]
+)
+app.include_router(
+    repo_router, prefix="/api", tags=["Repo"], dependencies=[Depends(require_api_key)]
+)
+app.include_router(
+    agent_router, prefix="/api", tags=["Agent"], dependencies=[Depends(require_api_key)]
+)
 
 
 if __name__ == "__main__":
