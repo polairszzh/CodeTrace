@@ -6,7 +6,7 @@ import App from './App.jsx'
 // 部署时通过 VITE_CODETRACE_API_KEY 注入；本地未配置时不加请求头，行为不变
 // trim 与后端 CODETRACE_API_KEY 的 strip 对齐，避免环境值含空格/换行导致 401
 const apiKey = (import.meta.env.VITE_CODETRACE_API_KEY || '').trim()
-const apiBase = import.meta.env.VITE_CODETRACE_API_BASE || '/api'
+const apiBase = (import.meta.env.VITE_CODETRACE_API_BASE || '/api').trim()
 if (apiKey) {
   // 基址统一解析为 origin + path（补尾斜杠），相对/绝对配置走同一套匹配；
   // base 用 location.href，与浏览器 fetch 对相对 URL 的解析基准保持一致
@@ -78,8 +78,20 @@ if (apiKey) {
           return originalFetch(resolveApiUrl(rawUrl), { ...reqInit, headers })
         }
         if (input instanceof Request) {
-          // 复制原 Request 到改写后的地址（method/headers/body 一并带过去）
-          return originalFetch(new Request(resolveApiUrl(rawUrl), input), { ...reqInit, headers })
+          // 显式复制原 Request 到改写后的地址（标准 RequestInit 写法）
+          const copied = new Request(resolveApiUrl(rawUrl), {
+            method: input.method,
+            headers: input.headers,
+            body: input.body,
+            mode: input.mode,
+            credentials: input.credentials,
+            cache: input.cache,
+            redirect: input.redirect,
+            referrer: input.referrer,
+            integrity: input.integrity,
+            signal: input.signal,
+          })
+          return originalFetch(copied, { ...reqInit, headers })
         }
       }
       return originalFetch(input, { ...reqInit, headers })
