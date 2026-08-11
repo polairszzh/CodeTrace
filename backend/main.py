@@ -1,11 +1,13 @@
+import hmac
 import os
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Security
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import APIKeyHeader
 
 from routers.agent import router as agent_router
 from routers.repo import router as repo_router
@@ -28,6 +30,40 @@ def _cors_settings(env_value: str) -> tuple[list[str], bool]:
 
 _cors_origins, _cors_credentials = _cors_settings(os.getenv("CODETRACE_CORS_ORIGINS", ""))
 
+
+def _api_key_config(env_value: str) -> str:
+    """
+    API Key 配置（纯函数，便于测试）：
+    去除首尾空白；空值表示未配置（鉴权关闭），非空即启用。
+    """
+    return env_value.strip()
+
+
+def _api_key_valid(configured: str, provided: str | None) -> bool:
+    """校验请求头 X-API-Key；常量时间比较，防时序侧信道。"""
+    if not configured:
+        return True
+    if not provided:
+        return False
+    # 先转 bytes 再比较：compare_digest 对含非 ASCII 的 str 会抛 TypeError
+    return hmac.compare_digest(configured.encode("utf-8"), provided.encode("utf-8"))
+
+
+_API_KEY = _api_key_config(os.getenv("CODETRACE_API_KEY", ""))
+
+
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+def require_api_key(x_api_key: str | None = Security(api_key_header)):
+    """
+    统一鉴权依赖：配置了 CODETRACE_API_KEY 时，所有 /api 接口要求请求头
+    X-API-Key 与配置值一致；未配置时放行（本地开发）。
+    """
+    if not _api_key_valid(_API_KEY, x_api_key):
+        raise HTTPException(status_code=401, detail="无效或缺失的 API Key")
+    return None
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
@@ -36,9 +72,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(trace_router, prefix="/api", tags=["Trace"])
-app.include_router(repo_router, prefix="/api", tags=["Repo"])
-app.include_router(agent_router, prefix="/api", tags=["Agent"])
+app.include_router(
+    trace_router, prefix="/api", tags=["Trace"], dependencies=[Security(require_api_key)]
+)
+app.include_router(
+    repo_router, prefix="/api", tags=["Repo"], dependencies=[Security(require_api_key)]
+)
+app.include_router(
+    agent_router, prefix="/api", tags=["Agent"], dependencies=[Security(require_api_key)]
+)
 
 
 if __name__ == "__main__":
