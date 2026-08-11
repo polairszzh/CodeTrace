@@ -16,6 +16,12 @@ from routers.trace import router as trace_router
 app = FastAPI(title="CodeTrace", version="1.0.0")
 
 
+@app.get("/healthz")
+def healthz():
+    """部署健康检查（不鉴权，供容器编排与监控探测）。"""
+    return {"status": "ok"}
+
+
 def _cors_settings(env_value: str) -> tuple[list[str], bool]:
     """
     CORS 配置（纯函数，便于测试）：
